@@ -47,13 +47,6 @@ jobs:
         run: |
           nohup gosmee client --saveDir /tmp/gosmee-replay ${{ secrets.PYSMEE_URL }} "http://${CONTROLLER_DOMAIN_URL}" &
 
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        with:
-          detached: true
-          limit-access-to-actor: true
-
       - name: Start installing cluster
         run: |
           export PAC_DIR=${PWD}
@@ -85,6 +78,9 @@ jobs:
            "${{ secrets.GH_APPS_TOKEN }}" \
            "${{ secrets.TEST_GITHUB_SECOND_TOKEN }}" \
            "${{ secrets.GITLAB_TOKEN }}"
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
 
       - name: Run E2E Tests on nightly
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
@@ -118,4 +114,4 @@ jobs:
           status: ${{ job.status }}
           notify_when: "failure"
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+            SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

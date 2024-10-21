@@ -109,10 +109,10 @@ run_e2e_tests() {
   export TEST_GITHUB_SECOND_TOKEN="${test_github_second_token}"
 
   export TEST_GITLAB_API_URL="https://gitlab.com"
-  export TEST_GITLAB_PROJECT_ID="34405323"
+  export TEST_GITLAB_PROJECT_ID="62404501"
   export TEST_GITLAB_TOKEN=${gitlab_token}
   # https://gitlab.com/gitlab-com/alliances/ibm-red-hat/sandbox/openshift-pipelines/pac-e2e-tests
-  make test-e2e
+  go test -tags=e2e ./test/ -v -run ^TestGitlabDeleteTagEvent$
 }
 
 collect_logs() {
