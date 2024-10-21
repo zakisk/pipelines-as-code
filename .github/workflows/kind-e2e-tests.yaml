@@ -10,6 +10,9 @@ on:
         description: "Run the build with tmate debugging enabled (https://github.com/marketplace/actions/debugging-with-tmate)"
         required: false
         default: false
+  push:
+    branches:
+      - SRVKP-6636-test
   pull_request_target:
     types: [opened, synchronize, reopened]
     paths:
@@ -46,13 +49,6 @@ jobs:
       - name: Run gosmee
         run: |
           nohup gosmee client --saveDir /tmp/gosmee-replay ${{ secrets.PYSMEE_URL }} "http://${CONTROLLER_DOMAIN_URL}" &
-
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
-        if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
-        with:
-          detached: true
-          limit-access-to-actor: true
 
       - name: Start installing cluster
         run: |
@@ -118,4 +114,7 @@ jobs:
           status: ${{ job.status }}
           notify_when: "failure"
         env:
-          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+            SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Setup tmate session
+        uses: mxschmitt/action-tmate@v3
