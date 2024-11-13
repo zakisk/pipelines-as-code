@@ -82,9 +82,9 @@ run_e2e_tests() {
   export GO_TEST_FLAGS="-v -race -failfast"
 
   export TEST_BITBUCKET_CLOUD_API_URL=https://api.bitbucket.org/2.0
-  export TEST_BITBUCKET_CLOUD_E2E_REPOSITORY=cboudjna/pac-e2e-tests
+  export TEST_BITBUCKET_CLOUD_E2E_REPOSITORY=zakisk/test-pac
   export TEST_BITBUCKET_CLOUD_TOKEN=${bitbucket_cloud_token}
-  export TEST_BITBUCKET_CLOUD_USER=cboudjna
+  export TEST_BITBUCKET_CLOUD_USER=zakisk-admin
 
   export TEST_EL_URL="http://${CONTROLLER_DOMAIN_URL}"
   export TEST_EL_WEBHOOK_SECRET="${webhook_secret}"
