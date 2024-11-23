@@ -82,9 +82,9 @@ run_e2e_tests() {
   export GO_TEST_FLAGS="-v -race -failfast"
 
   export TEST_BITBUCKET_CLOUD_API_URL=https://api.bitbucket.org/2.0
-  export TEST_BITBUCKET_CLOUD_E2E_REPOSITORY=cboudjna/pac-e2e-tests
+  export TEST_BITBUCKET_CLOUD_E2E_REPOSITORY=zakisk/test-pac
   export TEST_BITBUCKET_CLOUD_TOKEN=${bitbucket_cloud_token}
-  export TEST_BITBUCKET_CLOUD_USER=cboudjna
+  export TEST_BITBUCKET_CLOUD_USER=zakisk-admin
 
   export TEST_EL_URL="http://${CONTROLLER_DOMAIN_URL}"
   export TEST_EL_WEBHOOK_SECRET="${webhook_secret}"
@@ -128,6 +128,27 @@ collect_logs() {
   mkdir -p /tmp/logs
   kind export logs /tmp/logs
   [[ -d /tmp/gosmee-replay ]] && cp -a /tmp/gosmee-replay /tmp/logs/
+
+  kind_folder=/tmp/logs/kind-control-plane
+  files=$(ls $kind_folder/containers)
+  for file in ${files}; do
+    if [[ "$file" == *"gosmee"* ]]; then
+      sed -i "s|$TEST_GITEA_SMEEURL|TEST_GITEA_SMEEURL|g" "/tmp/logs/kind-control-plane/containers/$file"
+    fi
+  done
+
+  gosmee_pod_folder=""
+  pods_folders=$(ls $kind_folder/pods)
+  for folder in ${pods_folders}; do
+    if [[ "$folder" == *"gitea_gosmee"* ]]; then
+      gosmee_pod_folder="$folder"
+    fi
+  done
+
+  log_files=$(ls $kind_folder/pods/$gosmee_pod_folder/gosmee)
+  for log_file in ${log_files}; do
+    sed -i "s|$TEST_GITEA_SMEEURL|TEST_GITEA_SMEEURL|g" $kind_folder/pods/$gosmee_pod_folder/gosmee/$log_file
+  done
 
   kubectl get pipelineruns -A -o yaml >/tmp/logs/pac-pipelineruns.yaml
   kubectl get repositories.pipelinesascode.tekton.dev -A -o yaml >/tmp/logs/pac-repositories.yaml
