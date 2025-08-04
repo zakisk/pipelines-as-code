@@ -158,13 +158,17 @@ func (r *Reconciler) postFinalStatus(ctx context.Context, logger *zap.SugaredLog
 }
 
 func createStatusWithRetry(ctx context.Context, logger *zap.SugaredLogger, vcx provider.Interface, event *info.Event, status provider.StatusOpts) error {
+	logger.Infof("creating status with retry for pipelineRun %s - Status: %s, Conclusion: %s", status.PipelineRunName, status.Status, status.Conclusion)
+
 	var finalError error
-	for _, backoff := range backoffSchedule {
+	for i, backoff := range backoffSchedule {
+		logger.Debugf("Attempt %d/%d: calling provider CreateStatus for PipelineRun %s", i+1, len(backoffSchedule), status.PipelineRunName)
 		err := vcx.CreateStatus(ctx, event, status)
 		if err == nil {
+			logger.Infof("Successfully created status on attempt %d/%d for PipelineRun %s", i+1, len(backoffSchedule), status.PipelineRunName)
 			return nil
 		}
-		logger.Infof("failed to create status, error: %v, retrying in %v", err, backoff)
+		logger.Warnf("Attempt %d/%d failed to create status for PipelineRun %s, error: %v, retrying in %v", i+1, len(backoffSchedule), status.PipelineRunName, err, backoff)
 		time.Sleep(backoff)
 		finalError = err
 	}

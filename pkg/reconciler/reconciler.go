@@ -52,48 +52,72 @@ var (
 
 // ReconcileKind is the main entry point for reconciling PipelineRun resources.
 func (r *Reconciler) ReconcileKind(ctx context.Context, pr *tektonv1.PipelineRun) pkgreconciler.Event {
+	freshPlr, err := r.run.Clients.Tekton.TektonV1().PipelineRuns(pr.GetNamespace()).Get(ctx, pr.GetName(), metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("cannot get pipelineRun: %w", err)
+	}
 	ctx = info.StoreNS(ctx, system.Namespace())
-	logger := logging.FromContext(ctx).With("namespace", pr.GetNamespace())
+	logger := logging.FromContext(ctx).With("namespace", freshPlr.GetNamespace())
+
+	logger.Debugf("Reconciling PipelineRun %s/%s", freshPlr.GetNamespace(), freshPlr.GetName())
+
 	// if pipelineRun is in completed or failed state then return
-	state, exist := pr.GetAnnotations()[keys.State]
+	state, exist := freshPlr.GetAnnotations()[keys.State]
 	if exist && (state == kubeinteraction.StateCompleted || state == kubeinteraction.StateFailed) {
+		logger.Debugf("PipelineRun %s/%s is already in final state '%s', skipping reconciliation", freshPlr.GetNamespace(), freshPlr.GetName(), state)
 		return nil
 	}
 
 	reason := ""
-	if len(pr.Status.GetConditions()) > 0 {
-		reason = pr.Status.GetConditions()[0].GetReason()
+	if len(freshPlr.Status.GetConditions()) > 0 {
+		reason = freshPlr.Status.GetConditions()[0].GetReason()
+		logger.Debugf("PipelineRun %s/%s current reason: '%s'", freshPlr.GetNamespace(), freshPlr.GetName(), reason)
+	} else {
+		logger.Debugf("PipelineRun %s/%s has no status conditions yet", freshPlr.GetNamespace(), freshPlr.GetName())
 	}
+
+	state, exist = freshPlr.GetAnnotations()[keys.State]
+	logger.Debugf("PipelineRun %s/%s current state annotation: '%s' (exists: %v), spec.status: '%s'",
+		freshPlr.GetNamespace(), freshPlr.GetName(), state, exist, freshPlr.Spec.Status)
+
 	// This condition handles cases where the PipelineRun has entered a "Running" state,
 	// but its status in the Git provider remains "queued" (e.g., due to updates made by
 	// another controller outside PaC). To maintain consistency between the PipelineRun
 	// status and the Git provider status, we update both the PipelineRun resource and
 	// the corresponding status on the Git provider here.
 	if reason == string(tektonv1.PipelineRunReasonRunning) && state == kubeinteraction.StateQueued {
-		repoName := pr.GetAnnotations()[keys.Repository]
-		repo, err := r.repoLister.Repositories(pr.Namespace).Get(repoName)
+		logger.Infof("PipelineRun %s/%s is in Running state, updating Git provider status to in_progress", freshPlr.GetNamespace(), freshPlr.GetName())
+		repoName := freshPlr.GetAnnotations()[keys.Repository]
+		repo, err := r.repoLister.Repositories(freshPlr.Namespace).Get(repoName)
 		if err != nil {
 			return fmt.Errorf("failed to get repository CR: %w", err)
 		}
-		return r.updatePipelineRunToInProgress(ctx, logger, repo, pr)
+		return r.updatePipelineRunToInProgress(ctx, logger, repo, freshPlr)
 	}
 
 	// if its a GitHub App pipelineRun PR then process only if check run id is added otherwise wait
 	if _, ok := pr.Annotations[keys.InstallationID]; ok {
+		logger.Debugf("PipelineRun %s/%s is a GitHub App PipelineRun, checking for CheckRunID", pr.GetNamespace(), pr.GetName())
 		if _, ok := pr.Annotations[keys.CheckRunID]; !ok {
+			logger.Debugf("PipelineRun %s/%s missing CheckRunID annotation, waiting for it to be added", pr.GetNamespace(), pr.GetName())
 			return nil
 		}
+		logger.Debugf("PipelineRun %s/%s has CheckRunID, proceeding with reconciliation", pr.GetNamespace(), pr.GetName())
 	}
 
 	// queue pipelines which are in queued state and pending status
 	// if status is not pending, it could be canceled so let it be reported, even if state is queued
 	if state == kubeinteraction.StateQueued && pr.Spec.Status == tektonv1.PipelineRunSpecStatusPending {
+		logger.Infof("PipelineRun %s/%s is in queued state with pending status, adding to processing queue", pr.GetNamespace(), pr.GetName())
 		return r.queuePipelineRun(ctx, logger, pr)
 	}
 
 	if !pr.IsDone() && !pr.IsCancelled() {
+		logger.Debugf("PipelineRun %s/%s is not done and not cancelled, skipping final status processing", pr.GetNamespace(), pr.GetName())
 		return nil
 	}
+
+	logger.Infof("PipelineRun %s/%s is done, processing final status", pr.GetNamespace(), pr.GetName())
 
 	// make sure we have the latest pipelinerun to reconcile, since there is something updating at the same time
 	lpr, err := r.run.Clients.Tekton.TektonV1().PipelineRuns(pr.GetNamespace()).Get(ctx, pr.GetName(), metav1.GetOptions{})
@@ -102,8 +126,12 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, pr *tektonv1.PipelineRun
 	}
 
 	if lpr.GetResourceVersion() != pr.GetResourceVersion() {
+		logger.Debugf("PipelineRun %s/%s resource version has changed (current: %s, latest: %s), re-queuing for reconciliation",
+			pr.GetNamespace(), pr.GetName(), pr.GetResourceVersion(), lpr.GetResourceVersion())
 		return nil
 	}
+
+	logger.Debugf("PipelineRun %s/%s resource version is current, proceeding with final status processing", pr.GetNamespace(), pr.GetName())
 
 	// If we have a controllerInfo annotation, then we need to get the
 	// configmap configuration for it
@@ -114,12 +142,14 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, pr *tektonv1.PipelineRun
 	// We always assume the controller is in the same namespace as the original
 	// controller but that may changes
 	if controllerInfo, ok := pr.GetAnnotations()[keys.ControllerInfo]; ok {
+		logger.Debugf("PipelineRun %s/%s has controller info annotation, parsing configuration", pr.GetNamespace(), pr.GetName())
 		var parsedControllerInfo *info.ControllerInfo
 		if err := json.Unmarshal([]byte(controllerInfo), &parsedControllerInfo); err != nil {
 			return fmt.Errorf("failed to parse controllerInfo: %w", err)
 		}
 		r.run.Info.Controller = parsedControllerInfo
 	} else {
+		logger.Debugf("PipelineRun %s/%s using default controller configuration", pr.GetNamespace(), pr.GetName())
 		r.run.Info.Controller = info.GetControllerInfoFromEnvOrDefault()
 	}
 
@@ -267,16 +297,29 @@ func (r *Reconciler) reportFinalStatus(ctx context.Context, logger *zap.SugaredL
 }
 
 func (r *Reconciler) updatePipelineRunToInProgress(ctx context.Context, logger *zap.SugaredLogger, repo *v1alpha1.Repository, pr *tektonv1.PipelineRun) error {
+	logger.Infof("updating pipelineRun %v/%v state to %v and reporting status to provider", pr.GetNamespace(), pr.GetName(), kubeinteraction.StateStarted)
+
+	// Debug: Log PipelineRun current state
+	logger.Debugf("PipelineRun %s/%s current state: %+v", pr.GetNamespace(), pr.GetName(), pr.GetAnnotations()[keys.State])
+
 	pr, err := r.updatePipelineRunState(ctx, logger, pr, kubeinteraction.StateStarted)
 	if err != nil {
+		logger.Errorf("Failed to update PipelineRun %s/%s state to %s: %v", pr.GetNamespace(), pr.GetName(), kubeinteraction.StateStarted, err)
 		return fmt.Errorf("cannot update state: %w", err)
 	}
+	logger.Debugf("Successfully updated PipelineRun %s/%s state to %s", pr.GetNamespace(), pr.GetName(), kubeinteraction.StateStarted)
+
 	pacInfo := r.run.Info.GetPacOpts()
 	detectedProvider, event, err := r.detectProvider(ctx, logger, pr)
 	if err != nil {
+		logger.Errorf("Failed to detect provider for PipelineRun %s/%s: %v", pr.GetNamespace(), pr.GetName(), err)
 		logger.Error(err)
 		return nil
 	}
+	logger.Infof("Successfully detected provider for PipelineRun %s/%s", pr.GetNamespace(), pr.GetName())
+	logger.Debugf("Event details - URL: %s, SHA: %s, HeadBranch: %s, BaseBranch: %s, EventType: %s",
+		event.URL, event.SHA, event.HeadBranch, event.BaseBranch, event.EventType)
+
 	detectedProvider.SetPacInfo(&pacInfo)
 
 	if event.InstallationID > 0 {
@@ -300,12 +343,16 @@ func (r *Reconciler) updatePipelineRunToInProgress(ctx context.Context, logger *
 		if err := secretFromRepo.Get(ctx); err != nil {
 			return fmt.Errorf("cannot get secret from repository: %w", err)
 		}
+		logger.Debugf("Successfully retrieved secret from repository")
 	}
 
+	logger.Debugf("Setting up provider client")
 	err = detectedProvider.SetClient(ctx, r.run, event, repo, r.eventEmitter)
 	if err != nil {
+		logger.Errorf("Failed to set client for provider: %v", err)
 		return fmt.Errorf("cannot set client: %w", err)
 	}
+	logger.Debugf("Successfully set up provider client")
 
 	consoleURL := r.run.Clients.ConsoleUI().DetailURL(pr)
 
@@ -338,11 +385,12 @@ func (r *Reconciler) updatePipelineRunToInProgress(ctx context.Context, logger *
 		return nil
 	}
 
-	logger.Info("updated in_progress status on provider platform for pipelineRun ", pr.GetName())
+	logger.Infof("Successfully updated in_progress status on provider for PipelineRun %s/%s", pr.GetNamespace(), pr.GetName())
 	return nil
 }
 
 func (r *Reconciler) updatePipelineRunState(ctx context.Context, logger *zap.SugaredLogger, pr *tektonv1.PipelineRun, state string) (*tektonv1.PipelineRun, error) {
+	logger.Infof("updating pipelineRun %v/%v state to %v", pr.GetNamespace(), pr.GetName(), state)
 	mergePatch := map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
