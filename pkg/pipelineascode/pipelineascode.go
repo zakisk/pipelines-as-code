@@ -278,6 +278,20 @@ func (p *PacRun) startPR(ctx context.Context, match matcher.Match) (*tektonv1.Pi
 			// unneeded SIGSEGV's
 			return pr, fmt.Errorf("cannot patch pipelinerun %s: %w", pr.GetGenerateName(), err)
 		}
+		// Enhanced debugging to track PipelineRun state transitions and help diagnose issues
+		currentReason := ""
+		if len(pr.Status.GetConditions()) > 0 {
+			currentReason = pr.Status.GetConditions()[0].GetReason()
+		}
+
+		p.logger.Infof("PipelineRun %s/%s patched successfully - Spec.Status: %s, State annotation: '%s', Status reason: '%s', Git provider status: '%s', Patched: %s",
+			pr.GetNamespace(),
+			pr.GetName(),
+			pr.Spec.Status,
+			pr.GetAnnotations()[keys.State],
+			currentReason,
+			status.Status,
+			whatPatching)
 	}
 
 	return pr, nil
