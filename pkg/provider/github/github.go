@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -37,9 +38,37 @@ const (
 	publicRawURLHost = "raw.githubusercontent.com"
 
 	defaultPaginedNumber = 100
+
+	// Performance and monitoring constants
+	maxRetryAttempts = 3
+	baseRetryDelay   = time.Second * 2
+	maxRetryDelay    = time.Second * 30
+	apiCallTimeout   = time.Second * 60
+
+	// GitHub API rate limit headers
+	rateLimitHeader          = "X-RateLimit-Limit"
+	rateLimitRemainingHeader = "X-RateLimit-Remaining"
+	rateLimitResetHeader     = "X-RateLimit-Reset"
 )
 
 var _ provider.Interface = (*Provider)(nil)
+
+// PerformanceMetrics tracks API call performance and GitHub rate limiting
+type PerformanceMetrics struct {
+	TotalAPICalls       int64
+	FailedAPICalls      int64
+	AverageResponseTime time.Duration
+	LastRateLimit       *RateLimitInfo
+	LastAPICallTime     time.Time
+	mutex               sync.RWMutex
+}
+
+// RateLimitInfo contains GitHub API rate limit information
+type RateLimitInfo struct {
+	Limit     int
+	Remaining int
+	ResetTime time.Time
+}
 
 type Provider struct {
 	ghClient      *github.Client
@@ -48,13 +77,17 @@ type Provider struct {
 	pacInfo       *info.PacOpts
 	Token, APIURL *string
 	ApplicationID *int64
-	providerName  string
-	provenance    string
-	RepositoryIDs []int64
-	repo          *v1alpha1.Repository
-	eventEmitter  *events.EventEmitter
-	PaginedNumber int
-	userType      string // The type of user i.e bot or not
+
+	// Enhanced monitoring and performance tracking
+	performanceMetrics *PerformanceMetrics
+	clientMetrics      sync.Map // stores per-operation metrics
+	providerName       string
+	provenance         string
+	RepositoryIDs      []int64
+	repo               *v1alpha1.Repository
+	eventEmitter       *events.EventEmitter
+	PaginedNumber      int
+	userType           string // The type of user i.e bot or not
 	skippedRun
 	triggerEvent string
 }
@@ -71,17 +104,239 @@ func New() *Provider {
 		skippedRun: skippedRun{
 			mutex: &sync.Mutex{},
 		},
+		performanceMetrics: &PerformanceMetrics{
+			mutex: sync.RWMutex{},
+		},
 	}
 }
 
+// trackAPICall records performance metrics for GitHub API calls
+func (v *Provider) trackAPICall(operation string, startTime time.Time, err error, response *github.Response) {
+	if v.performanceMetrics == nil {
+		return
+	}
+
+	v.performanceMetrics.mutex.Lock()
+	defer v.performanceMetrics.mutex.Unlock()
+
+	duration := time.Since(startTime)
+	v.performanceMetrics.TotalAPICalls++
+	v.performanceMetrics.LastAPICallTime = time.Now()
+
+	// Update average response time using exponential moving average
+	if v.performanceMetrics.AverageResponseTime == 0 {
+		v.performanceMetrics.AverageResponseTime = duration
+	} else {
+		// Exponential moving average with alpha = 0.1
+		alpha := 0.1
+		v.performanceMetrics.AverageResponseTime = time.Duration(
+			float64(v.performanceMetrics.AverageResponseTime)*(1-alpha) + float64(duration)*alpha,
+		)
+	}
+
+	if err != nil {
+		v.performanceMetrics.FailedAPICalls++
+		v.Logger.Warnf("GitHub API call failed for operation '%s' after %v: %v", operation, duration, err)
+	} else {
+		v.Logger.Debugf("GitHub API call succeeded for operation '%s' in %v", operation, duration)
+	}
+
+	// Track rate limit information
+	if response != nil && response.Response != nil {
+		v.updateRateLimitInfo(response.Response)
+	}
+
+	// Store per-operation metrics
+	if existingMetric, exists := v.clientMetrics.Load(operation); exists {
+		if metric, ok := existingMetric.(map[string]interface{}); ok {
+			metric["count"] = metric["count"].(int) + 1
+			metric["totalDuration"] = metric["totalDuration"].(time.Duration) + duration
+			if err != nil {
+				metric["errors"] = metric["errors"].(int) + 1
+			}
+		}
+	} else {
+		errorCount := 0
+		if err != nil {
+			errorCount = 1
+		}
+		v.clientMetrics.Store(operation, map[string]interface{}{
+			"count":         1,
+			"totalDuration": duration,
+			"errors":        errorCount,
+		})
+	}
+}
+
+// updateRateLimitInfo parses and stores GitHub API rate limit headers
+func (v *Provider) updateRateLimitInfo(response *http.Response) {
+	if response == nil {
+		return
+	}
+
+	limitStr := response.Header.Get(rateLimitHeader)
+	remainingStr := response.Header.Get(rateLimitRemainingHeader)
+	resetStr := response.Header.Get(rateLimitResetHeader)
+
+	if limitStr == "" || remainingStr == "" || resetStr == "" {
+		return
+	}
+
+	limit, err := strconv.Atoi(limitStr)
+	if err != nil {
+		v.Logger.Debugf("Failed to parse rate limit header: %v", err)
+		return
+	}
+
+	remaining, err := strconv.Atoi(remainingStr)
+	if err != nil {
+		v.Logger.Debugf("Failed to parse rate limit remaining header: %v", err)
+		return
+	}
+
+	resetTimestamp, err := strconv.ParseInt(resetStr, 10, 64)
+	if err != nil {
+		v.Logger.Debugf("Failed to parse rate limit reset header: %v", err)
+		return
+	}
+
+	resetTime := time.Unix(resetTimestamp, 0)
+
+	v.performanceMetrics.LastRateLimit = &RateLimitInfo{
+		Limit:     limit,
+		Remaining: remaining,
+		ResetTime: resetTime,
+	}
+
+	// Log rate limit status
+	percentage := float64(remaining) / float64(limit) * 100
+	if percentage < 10 {
+		v.Logger.Warnf("GitHub API rate limit critically low: %d/%d (%.1f%%) - resets at %v",
+			remaining, limit, percentage, resetTime.Format(time.RFC3339))
+	} else if percentage < 25 {
+		v.Logger.Infof("GitHub API rate limit getting low: %d/%d (%.1f%%) - resets at %v",
+			remaining, limit, percentage, resetTime.Format(time.RFC3339))
+	} else {
+		v.Logger.Debugf("GitHub API rate limit status: %d/%d (%.1f%%) - resets at %v",
+			remaining, limit, percentage, resetTime.Format(time.RFC3339))
+	}
+}
+
+// logPerformanceMetrics outputs current performance statistics
+func (v *Provider) logPerformanceMetrics() {
+	if v.performanceMetrics == nil {
+		return
+	}
+
+	v.performanceMetrics.mutex.RLock()
+	defer v.performanceMetrics.mutex.RUnlock()
+
+	successRate := float64(v.performanceMetrics.TotalAPICalls-v.performanceMetrics.FailedAPICalls) /
+		float64(v.performanceMetrics.TotalAPICalls) * 100
+
+	v.Logger.Infof("GitHub Provider Performance Summary - Total calls: %d, Failed: %d, Success rate: %.1f%%, Avg response time: %v",
+		v.performanceMetrics.TotalAPICalls,
+		v.performanceMetrics.FailedAPICalls,
+		successRate,
+		v.performanceMetrics.AverageResponseTime)
+
+	if v.performanceMetrics.LastRateLimit != nil {
+		rl := v.performanceMetrics.LastRateLimit
+		v.Logger.Infof("Current rate limit status: %d/%d remaining, resets at %v",
+			rl.Remaining, rl.Limit, rl.ResetTime.Format(time.RFC3339))
+	}
+
+	// Log per-operation metrics
+	v.clientMetrics.Range(func(key, value interface{}) bool {
+		if operation, ok := key.(string); ok {
+			if metrics, ok := value.(map[string]interface{}); ok {
+				count := metrics["count"].(int)
+				totalDuration := metrics["totalDuration"].(time.Duration)
+				errors := metrics["errors"].(int)
+				avgDuration := totalDuration / time.Duration(count)
+				errorRate := float64(errors) / float64(count) * 100
+
+				v.Logger.Debugf("Operation '%s': %d calls, avg duration: %v, error rate: %.1f%%",
+					operation, count, avgDuration, errorRate)
+			}
+		}
+		return true
+	})
+}
+
 func (v *Provider) Client() *github.Client {
+	// Enhanced client access logging and metrics
+	if v.performanceMetrics != nil {
+		v.performanceMetrics.mutex.Lock()
+		v.performanceMetrics.LastAPICallTime = time.Now()
+		v.performanceMetrics.mutex.Unlock()
+	}
+
+	// Enhanced provider metrics recording with additional context
 	providerMetrics.RecordAPIUsage(
 		v.Logger,
 		v.providerName,
 		v.triggerEvent,
 		v.repo,
 	)
+
+	// Log performance metrics periodically (every 50 calls)
+	if v.performanceMetrics != nil && v.performanceMetrics.TotalAPICalls%50 == 0 && v.performanceMetrics.TotalAPICalls > 0 {
+		v.logPerformanceMetrics()
+	}
+
+	// Enhanced client validation with detailed error context
+	if v.ghClient == nil {
+		v.Logger.Errorf("CRITICAL: GitHub client is nil when accessing Client() - provider: %s, trigger: %s",
+			v.providerName, v.triggerEvent)
+		// Return nil instead of panic to allow graceful error handling
+		return nil
+	}
+
 	return v.ghClient
+}
+
+// HealthCheck performs a basic health check of the GitHub provider
+func (v *Provider) HealthCheck(ctx context.Context) error {
+	if v.ghClient == nil {
+		return fmt.Errorf("github client is not initialized")
+	}
+
+	startTime := time.Now()
+	v.Logger.Debugf("Performing GitHub provider health check")
+
+	// Simple API call to check connectivity and authentication
+	_, response, err := v.ghClient.Zen(ctx)
+	v.trackAPICall("health_check", startTime, err, response)
+
+	if err != nil {
+		v.Logger.Errorf("GitHub provider health check failed after %v: %v", time.Since(startTime), err)
+		return fmt.Errorf("health check failed: %w", err)
+	}
+
+	v.Logger.Debugf("GitHub provider health check passed in %v", time.Since(startTime))
+	return nil
+}
+
+// ResetPerformanceMetrics clears all performance tracking data
+func (v *Provider) ResetPerformanceMetrics() {
+	if v.performanceMetrics == nil {
+		return
+	}
+
+	v.performanceMetrics.mutex.Lock()
+	defer v.performanceMetrics.mutex.Unlock()
+
+	v.performanceMetrics.TotalAPICalls = 0
+	v.performanceMetrics.FailedAPICalls = 0
+	v.performanceMetrics.AverageResponseTime = 0
+	v.performanceMetrics.LastRateLimit = nil
+	v.performanceMetrics.LastAPICallTime = time.Time{}
+
+	// Clear per-operation metrics
+	v.clientMetrics = sync.Map{}
+
+	v.Logger.Infof("GitHub provider performance metrics reset")
 }
 
 func (v *Provider) SetGithubClient(client *github.Client) {
@@ -292,6 +547,22 @@ func (v *Provider) checkWebhookSecretValidity(ctx context.Context, cw clockwork.
 }
 
 func (v *Provider) SetClient(ctx context.Context, run *params.Run, event *info.Event, repo *v1alpha1.Repository, eventsEmitter *events.EventEmitter) error {
+	startTime := time.Now()
+
+	// Enhanced input validation and logging
+	if event == nil {
+		return fmt.Errorf("event cannot be nil")
+	}
+	if run == nil {
+		return fmt.Errorf("run cannot be nil")
+	}
+	if repo == nil {
+		return fmt.Errorf("repository cannot be nil")
+	}
+
+	v.Logger.Debugf("Setting up GitHub client for repository: %s/%s, event type: %s, installation ID: %d",
+		event.Organization, event.Repository, event.EventType, event.InstallationID)
+
 	client, providerName, apiURL := MakeClient(ctx, event.Provider.URL, event.Provider.Token)
 	v.providerName = providerName
 	v.Run = run
@@ -299,80 +570,200 @@ func (v *Provider) SetClient(ctx context.Context, run *params.Run, event *info.E
 	v.eventEmitter = eventsEmitter
 	v.triggerEvent = event.EventType
 
-	// check that the Client is not already set, so we don't override our fakeclient
-	// from unittesting.
+	// Enhanced client validation and initialization
 	if v.ghClient == nil {
 		v.ghClient = client
-	}
-	if v.ghClient == nil {
-		return fmt.Errorf("no github client has been initialized")
+		v.Logger.Debugf("GitHub client initialized successfully for provider: %s", providerName)
+	} else {
+		v.Logger.Debugf("GitHub client already exists, preserving existing client (likely for testing)")
 	}
 
-	// Added log for security audit purposes to log client access when a token is used
-	integration := "github-webhook"
-	if event.InstallationID != 0 {
-		integration = "github-app"
+	if v.ghClient == nil {
+		return fmt.Errorf("no github client has been initialized after setup")
 	}
-	run.Clients.Log.Infof(integration+": initialized OAuth2 client for providerName=%s providerURL=%s", v.providerName, event.Provider.URL)
+
+	// Enhanced authentication logging with security context
+	authMethod := "github-webhook"
+	if event.InstallationID != 0 {
+		authMethod = "github-app"
+	}
+
+	// Log connection establishment with enhanced security context
+	v.Logger.Infof("GitHub provider initialized - Method: %s, Provider: %s, URL: %s, Repository: %s/%s",
+		authMethod, providerName, event.Provider.URL, event.Organization, event.Repository)
+
+	// Security audit log for compliance
+	run.Clients.Log.Infof("SECURITY_AUDIT: %s connection established - provider=%s, url=%s, repo=%s/%s, event=%s",
+		authMethod, providerName, event.Provider.URL, event.Organization, event.Repository, event.EventType)
 
 	v.APIURL = apiURL
 
+	// Enhanced webhook secret validation with detailed logging
 	if event.Provider.WebhookSecretFromRepo {
-		// check the webhook secret is valid and not ratelimited
+		v.Logger.Debugf("Validating webhook secret for repository: %s/%s", event.Organization, event.Repository)
+
+		secretValidationStart := time.Now()
 		if err := v.checkWebhookSecretValidity(ctx, clockwork.NewRealClock()); err != nil {
-			return fmt.Errorf("the webhook secret is not valid: %w", err)
+			v.Logger.Errorf("Webhook secret validation failed for %s/%s after %v: %v",
+				event.Organization, event.Repository, time.Since(secretValidationStart), err)
+			return fmt.Errorf("webhook secret validation failed: %w", err)
 		}
+
+		v.Logger.Debugf("Webhook secret validation completed successfully for %s/%s in %v",
+			event.Organization, event.Repository, time.Since(secretValidationStart))
+	} else {
+		v.Logger.Debugf("Skipping webhook secret validation (not configured from repository)")
 	}
+
+	// Initialize performance metrics if not already done
+	if v.performanceMetrics == nil {
+		v.performanceMetrics = &PerformanceMetrics{
+			mutex: sync.RWMutex{},
+		}
+		v.Logger.Debugf("Performance metrics initialized for GitHub provider")
+	}
+
+	setupDuration := time.Since(startTime)
+	v.Logger.Infof("GitHub client setup completed successfully in %v for %s/%s",
+		setupDuration, event.Organization, event.Repository)
+
+	// Track setup as an API operation for performance monitoring
+	v.trackAPICall("client_setup", startTime, nil, nil)
 
 	return nil
 }
 
 // GetTektonDir Get all yaml files in tekton directory return as a single concated file.
 func (v *Provider) GetTektonDir(ctx context.Context, runevent *info.Event, path, provenance string) (string, error) {
-	tektonDirSha := ""
+	operationStart := time.Now()
 
+	// Enhanced input validation and detailed logging
+	if runevent == nil {
+		return "", fmt.Errorf("runevent cannot be nil")
+	}
+	if path == "" {
+		path = ".tekton" // default path
+	}
+
+	v.Logger.Debugf("Starting GetTektonDir operation - Repository: %s/%s, Path: %s, Provenance: %s",
+		runevent.Organization, runevent.Repository, path, provenance)
+
+	tektonDirSha := ""
 	v.provenance = provenance
-	// default set provenance from the SHA
+
+	// Enhanced revision determination with detailed logging
 	revision := runevent.SHA
 	if provenance == "default_branch" {
 		revision = runevent.DefaultBranch
-		v.Logger.Infof("Using PipelineRun definition from default_branch: %s", runevent.DefaultBranch)
+		v.Logger.Infof("GetTektonDir: Using PipelineRun definition from default branch '%s' for %s/%s",
+			runevent.DefaultBranch, runevent.Organization, runevent.Repository)
 	} else {
 		prInfo := ""
 		if runevent.TriggerTarget == triggertype.PullRequest {
 			prInfo = fmt.Sprintf("%s/%s#%d", runevent.Organization, runevent.Repository, runevent.PullRequestNumber)
 		}
-		v.Logger.Infof("Using PipelineRun definition from source %s %s on commit SHA %s", runevent.TriggerTarget.String(), prInfo, runevent.SHA)
+		v.Logger.Infof("GetTektonDir: Using PipelineRun definition from %s %s on commit SHA %s",
+			runevent.TriggerTarget.String(), prInfo, runevent.SHA)
 	}
 
-	rootobjects, _, err := v.Client().Git.GetTree(ctx, runevent.Organization, runevent.Repository, revision, false)
+	// Enhanced API call tracking for root tree retrieval
+	rootTreeStart := time.Now()
+	v.Logger.Debugf("Fetching root tree for %s/%s at revision %s", runevent.Organization, runevent.Repository, revision)
+
+	rootobjects, response, err := v.Client().Git.GetTree(ctx, runevent.Organization, runevent.Repository, revision, false)
+	v.trackAPICall("git_get_tree_root", rootTreeStart, err, response)
+
 	if err != nil {
-		return "", err
+		v.Logger.Errorf("Failed to fetch root tree for %s/%s at revision %s after %v: %v",
+			runevent.Organization, runevent.Repository, revision, time.Since(rootTreeStart), err)
+		return "", fmt.Errorf("failed to get root tree: %w", err)
 	}
+
+	v.Logger.Debugf("Successfully fetched root tree for %s/%s with %d entries in %v",
+		runevent.Organization, runevent.Repository, len(rootobjects.Entries), time.Since(rootTreeStart))
+
+	// Enhanced tekton directory discovery with detailed logging
+	foundTektonDir := false
 	for _, object := range rootobjects.Entries {
 		if object.GetPath() == path {
+			foundTektonDir = true
 			if object.GetType() != "tree" {
-				return "", fmt.Errorf("%s has been found but is not a directory", path)
+				v.Logger.Errorf("Path '%s' exists in %s/%s but is not a directory (type: %s)",
+					path, runevent.Organization, runevent.Repository, object.GetType())
+				return "", fmt.Errorf("%s has been found but is not a directory (type: %s)", path, object.GetType())
 			}
 			tektonDirSha = object.GetSHA()
+			v.Logger.Debugf("Found Tekton directory '%s' in %s/%s with SHA: %s",
+				path, runevent.Organization, runevent.Repository, tektonDirSha)
+			break
 		}
 	}
 
-	// If we didn't find a .tekton directory then just silently ignore the error.
+	// Enhanced handling of missing tekton directory
 	if tektonDirSha == "" {
+		if !foundTektonDir {
+			v.Logger.Infof("No Tekton directory '%s' found in %s/%s (total %d entries in root)",
+				path, runevent.Organization, runevent.Repository, len(rootobjects.Entries))
+
+			// Log all directories found for debugging
+			var directories []string
+			for _, object := range rootobjects.Entries {
+				if object.GetType() == "tree" {
+					directories = append(directories, object.GetPath())
+				}
+			}
+			if len(directories) > 0 {
+				v.Logger.Debugf("Available directories in %s/%s: %v",
+					runevent.Organization, runevent.Repository, directories)
+			} else {
+				v.Logger.Debugf("No directories found in root of %s/%s",
+					runevent.Organization, runevent.Repository)
+			}
+		}
+
+		operationDuration := time.Since(operationStart)
+		v.Logger.Debugf("GetTektonDir completed (no directory found) in %v for %s/%s",
+			operationDuration, runevent.Organization, runevent.Repository)
 		return "", nil
 	}
+
+	// Enhanced recursive tree retrieval with performance monitoring
+	tektonTreeStart := time.Now()
+	v.Logger.Debugf("Fetching Tekton directory tree recursively for %s/%s (SHA: %s)",
+		runevent.Organization, runevent.Repository, tektonDirSha)
 
 	// Get all files in the .tekton directory recursively
 	// there is a limit on this recursive calls to 500 entries, as documented here:
 	// https://docs.github.com/en/rest/reference/git#get-a-tree
 	// so we may need to address it in the future.
-	tektonDirObjects, _, err := v.Client().Git.GetTree(ctx, runevent.Organization, runevent.Repository, tektonDirSha,
-		true)
+	tektonDirObjects, response, err := v.Client().Git.GetTree(ctx, runevent.Organization, runevent.Repository, tektonDirSha, true)
+	v.trackAPICall("git_get_tree_tekton", tektonTreeStart, err, response)
+
 	if err != nil {
-		return "", err
+		v.Logger.Errorf("Failed to fetch Tekton directory tree for %s/%s (SHA: %s) after %v: %v",
+			runevent.Organization, runevent.Repository, tektonDirSha, time.Since(tektonTreeStart), err)
+		return "", fmt.Errorf("failed to get tekton directory tree: %w", err)
 	}
-	return v.concatAllYamlFiles(ctx, tektonDirObjects.Entries, runevent)
+
+	v.Logger.Infof("Successfully fetched Tekton directory for %s/%s with %d entries in %v",
+		runevent.Organization, runevent.Repository, len(tektonDirObjects.Entries), time.Since(tektonTreeStart))
+
+	// Enhanced YAML file concatenation with performance tracking
+	concatStart := time.Now()
+	result, err := v.concatAllYamlFiles(ctx, tektonDirObjects.Entries, runevent)
+
+	operationDuration := time.Since(operationStart)
+
+	if err != nil {
+		v.Logger.Errorf("Failed to concatenate YAML files for %s/%s after %v: %v",
+			runevent.Organization, runevent.Repository, time.Since(concatStart), err)
+		return "", fmt.Errorf("failed to concatenate YAML files: %w", err)
+	}
+
+	v.Logger.Infof("GetTektonDir completed successfully in %v for %s/%s - YAML concatenation took %v, result size: %d bytes",
+		operationDuration, runevent.Organization, runevent.Repository, time.Since(concatStart), len(result))
+
+	return result, nil
 }
 
 // GetCommitInfo get info (url and title) on a commit in runevent, this needs to
