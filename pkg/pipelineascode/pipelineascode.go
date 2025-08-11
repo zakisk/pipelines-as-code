@@ -310,6 +310,11 @@ func getMergePatch(annotations, labels map[string]string) map[string]any {
 	}
 }
 
+// getExecutionOrderPatch returns a patch to set the execution order of the pipelineRun
+// the order is a comma separated list of pipelineRun names
+// the order is used to determine the order in which the pipelineRuns are executed
+// the order is set in the metadata.annotations.execution-order annotation
+// the order is used to determine the order in which the pipelineRuns are executed.
 func getExecutionOrderPatch(order string) map[string]any {
 	return map[string]any{
 		"metadata": map[string]any{
