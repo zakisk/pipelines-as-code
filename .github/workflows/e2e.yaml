@@ -31,7 +31,7 @@ jobs:
     if: >
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
-      (github.event_name == 'pull_request_target' && contains(fromJSON('["zakisk", "infernus01", "savitaashture", "chmouel", "vdemeester", "enarha", "aThorp96", "waveywaves", "dependabot[bot]"]'), github.event.pull_request.user.login))
+      github.event_name == 'pull_request_target'
     concurrency:
       group: ${{ github.workflow }}-${{ matrix.provider }}-${{ github.event.pull_request.number || github.ref_name }}
       cancel-in-progress: true
@@ -68,6 +68,12 @@ jobs:
       TEST_BITBUCKET_SERVER_USER: pipelines
       TEST_BITBUCKET_SERVER_E2E_REPOSITORY: PAC/pac-e2e-tests
     steps:
+      - name: "Check if user has write access"
+        uses: "lannonbr/repo-permission-check-action@2.0.0"
+        with:
+          permission: "write"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_APPS_TOKEN }}
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.target_ref || github.event.pull_request.head.sha || github.sha }}
