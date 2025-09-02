@@ -25,9 +25,53 @@ on:
       - "test/testdata/**"
 
 jobs:
+  # New Job: Checks permissions for PRs and outputs the result.
+  check-permissions:
+    name: Check PR author permissions
+    # This job only runs for pull_request_target events.
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    outputs:
+      granted: ${{ steps.permission_check.outputs.result }}
+    steps:
+      - name: Check user permissions
+        id: permission_check
+        uses: actions/github-script@v7
+        with:
+          result-encoding: string # Capture the script's return value as an output
+          script: |
+            const actor = context.payload.pull_request.user.login;
+
+            // Allow dependabot and other bots unconditionally.
+            if (actor.endsWith('[bot]')) {
+              core.info(`User @${actor} is a bot, allowing.`);
+              return 'true';
+            }
+
+            try {
+              const response = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                username: actor,
+              });
+
+              const permission = response.data.permission;
+              if (permission === 'admin' || permission === 'write') {
+                core.info(`✅ User @${actor} has '${permission}' permission. Proceeding.`);
+                return 'true';
+              } else {
+                core.warning(`User @${actor} has '${permission}' permission. 'write' or 'admin' is required. Skipping E2E tests.`);
+                return 'false';
+              }
+            } catch (error) {
+              core.warning(`Could not verify permission for @${actor}. They might not be a collaborator. Error: ${error.message}`);
+              return 'false';
+            }
+
+  # Modified Job: Now depends on the check-permissions job.
   e2e-tests:
-    # Run on schedule, unconditional workflow_dispatch,
-    # or pull_request_target if the actor has write/admin permissions.
+    needs: [check-permissions] # It depends on the result of the check.
+    # The job runs on schedule/dispatch, or on PRs if the check-permissions job granted access.
     if: >
       github.event_name == 'schedule' ||
       github.event_name == 'workflow_dispatch' ||
@@ -128,8 +172,8 @@ jobs:
           nohup gosmee client --saveDir /tmp/gosmee-replay ${{ secrets.PYSMEE_URL }} "http://${CONTROLLER_DOMAIN_URL}" &
 
       - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
+        uses: mxschmitt/action-tmate@v3
         with:
           detached: true
           limit-access-to-actor: true
@@ -156,11 +200,8 @@ jobs:
         run: |
           ./hack/gh-workflow-ci.sh create_second_github_app_controller_on_ghe
 
-      # Adjusted step-level conditions based on the new job-level logic
       - name: Run E2E Tests
-        # This step runs for schedule, PR target (if job started), or workflow_dispatch (if job started)
-        # Remove the old label check which is no longer relevant for triggering.
-        if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request_target' }}
+        # The job-level `if` condition already handles this, so the step can run unconditionally
         env:
           TEST_PROVIDER: ${{ matrix.provider }}
           TEST_BITBUCKET_CLOUD_TOKEN: ${{ secrets.BITBUCKET_CLOUD_TOKEN }}
@@ -177,7 +218,6 @@ jobs:
           ./hack/gh-workflow-ci.sh run_e2e_tests
 
       - name: Run E2E Tests on nightly
-        # This step still runs specifically for schedule or workflow_dispatch
         if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
         env:
           NIGHTLY_E2E_TEST: "true"
@@ -223,3 +263,4 @@ jobs:
           notify_when: "failure"
         env:
           SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
