@@ -55,6 +55,12 @@ func NewPacs(event *info.Event, vcx provider.Interface, run *params.Run, pacInfo
 	}
 }
 
+// Run is the main orchestration entrypoint for processing a single incoming event.
+// It matches the event to repository rules, creates or updates Tekton PipelineRuns,
+// manages concurrency (including pending/queued state), emits provider statuses,
+// and finally patches PipelineRuns with execution order information when applicable.
+// The call blocks until all asynchronous operations launched for this event complete.
+// Context is used to propagate deadlines/cancellation to downstream clients.
 func (p *PacRun) Run(ctx context.Context) error {
 	matchedPRs, repo, err := p.matchRepoPR(ctx)
 	if repo != nil && p.event.TriggerTarget == triggertype.PullRequestClosed {
