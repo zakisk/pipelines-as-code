@@ -150,6 +150,14 @@ func (p *PacRun) Run(ctx context.Context) error {
 	return nil
 }
 
+// startPR creates and initializes a Tekton PipelineRun for the given match.
+// It may auto-create a basic auth Secret for git access (and set its ownerRef),
+// adds Pipelines-as-Code labels/annotations, optionally marks the PipelineRun
+// as pending when repository concurrency is enabled, creates the PipelineRun in
+// the target namespace, reports an initial status with a console URL to the SCM
+// provider, and patches state/logURL metadata used by the PAC watcher. On
+// partial failures after creation, it returns the created PipelineRun along
+// with the error so callers can decide how to proceed.
 func (p *PacRun) startPR(ctx context.Context, match matcher.Match) (*tektonv1.PipelineRun, error) {
 	var gitAuthSecretName string
 
