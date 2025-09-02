@@ -112,6 +112,35 @@ jobs:
       TEST_BITBUCKET_SERVER_USER: pipelines
       TEST_BITBUCKET_SERVER_E2E_REPOSITORY: PAC/pac-e2e-tests
     steps:
+      - name: Check user permissions (detailed)
+        id: check_perms
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const actor = context.actor;
+            const { owner, repo } = context.repo;
+
+            try {
+              const response = await github.rest.repos.getCollaboratorPermissionLevel({
+                owner,
+                repo,
+                username: actor,
+              });
+
+              const userPermission = response.data.permission;
+
+              if (userPermission === 'admin') {
+                core.info(`✅ Permission check successful. User @${actor} is an ADMIN.`);
+              } else if (userPermission === 'write') {
+                core.info(`✅ Permission check successful. User @${actor} has WRITE permission.`);
+              } else {
+                core.setFailed(`❌ Permission check failed. User @${actor} has '${userPermission}' permission, but 'write' or 'admin' is required to proceed.`);
+              }
+
+            } catch (error) {
+              core.setFailed(`Could not verify permission for @${actor}. They might not be a collaborator. Error: ${error.message}`);
+            }
+
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.target_ref || github.event.pull_request.head.sha || github.sha }}
