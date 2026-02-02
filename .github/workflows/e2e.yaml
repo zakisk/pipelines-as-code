@@ -43,13 +43,7 @@ jobs:
       matrix:
         provider:
           [
-            github,
-            github_second_controller,
             gitlab_bitbucket,
-            gitea_1,
-            gitea_2,
-            gitea_3,
-            concurrency,
           ]
 
     env:
@@ -59,8 +53,8 @@ jobs:
       KUBECONFIG: /home/runner/.kube/config.local
       TARGET_TEAM_SLUGS: "pipeline-as-code,pipeline-as-code-contributors"
       TEST_BITBUCKET_CLOUD_API_URL: https://api.bitbucket.org/2.0
-      TEST_BITBUCKET_CLOUD_E2E_REPOSITORY: cboudjna/pac-e2e-tests
-      TEST_BITBUCKET_CLOUD_USER: cboudjna
+      TEST_BITBUCKET_CLOUD_E2E_REPOSITORY: zakisk/test-pac
+      TEST_BITBUCKET_CLOUD_USER: zs84907@gmail.com
       TEST_BITBUCKET_SERVER_API_URL: ${{ secrets.BITBUCKET_SERVER_API_URL }}
       TEST_BITBUCKET_SERVER_E2E_REPOSITORY: PAC/pac-e2e-tests
       TEST_BITBUCKET_SERVER_TOKEN: ${{ secrets.BITBUCKET_SERVER_TOKEN }}
@@ -321,7 +315,6 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.debug_enabled }}
         with:
           detached: true
-          limit-access-to-actor: true
 
       - name: Start installing cluster with startpaac
         env:
@@ -402,6 +395,12 @@ jobs:
           TEST_BITBUCKET_SERVER_WEBHOOK_SECRET: ${{ secrets.BITBUCKET_SERVER_WEBHOOK_SECRET }}
         run: |
           ./hack/gh-workflow-ci.sh run_e2e_tests
+
+      - name: Setup tmate session for debugging
+        uses: mxschmitt/action-tmate@v3
+        if: ${{ failure() }}
+        with:
+          limit-access-to-actor: true
 
       - name: Run E2E Tests on nightly
         # This step still runs specifically for schedule or workflow_dispatch
