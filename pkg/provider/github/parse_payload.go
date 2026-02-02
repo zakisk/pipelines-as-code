@@ -633,6 +633,8 @@ func (v *Provider) handleCommitCommentEvent(ctx context.Context, event *github.C
 		err        error
 	)
 
+
+	
 	// If it is a /test or /retest comment with pipelinerun name figure out the pipelinerun name
 	if provider.IsTestRetestComment(event.GetComment().GetBody()) {
 		prName, branchName, tagName, err = provider.GetPipelineRunAndBranchOrTagNameFromTestComment(event.GetComment().GetBody())
