@@ -85,8 +85,13 @@ get_tests() {
     gitea_tests=("${filtered_tests[@]}")
   fi
 
+  local -a ghe_tests=()
+  if [[ "${target}" == github_ghe* ]]; then
+    mapfile -t ghe_tests < <(echo "${all_tests}" | grep -iP 'GithubGHE' 2>/dev/null | grep -ivP 'Concurrency' 2>/dev/null | sort 2>/dev/null)
+  fi
+
   local -a github_tests=()
-  if [[ "${target}" == *"github"* ]] && [[ "${target}" != "github_ghe" ]] && [[ "${target}" != "github_second_controller" ]]; then
+  if [[ "${target}" == *"github"* ]] && [[ "${target}" != github_ghe* ]] && [[ "${target}" != "github_second_controller" ]]; then
     mapfile -t github_tests < <(echo "${all_tests}" | grep -iP '^TestGithub' 2>/dev/null | grep -ivP 'Concurrency|GithubGHE' 2>/dev/null | sort 2>/dev/null)
   fi
 
@@ -95,6 +100,13 @@ get_tests() {
   if [[ ${#gitea_tests[@]} -gt 0 ]]; then
     chunk_size=$((${#gitea_tests[@]} / 3))
     remainder=$((${#gitea_tests[@]} % 3))
+  fi
+
+  # Calculate chunk sizes for splitting GHE tests into 3 parts
+  local ghe_chunk_size ghe_remainder
+  if [[ ${#ghe_tests[@]} -gt 0 ]]; then
+    ghe_chunk_size=$((${#ghe_tests[@]} / 3))
+    ghe_remainder=$((${#ghe_tests[@]} % 3))
   fi
 
   # TODO: revert once the new workflow matrix lands on main.
@@ -135,11 +147,28 @@ get_tests() {
       printf '%s\n' "${github_tests[@]:$((github_chunk_size + github_remainder))}"
     fi
     ;;
-  github_second_controller)
+  # TODO: revert - remove github_second_controller, github_ghe aliases
+  # once the new workflow matrix lands on main. These exist because
+  # pull_request_target runs the workflow YAML from main which still sends old
+  # target names.
+  github_second_controller | github_ghe)
     printf '%s\n' "${all_tests}" | grep -iP 'GithubGHE' | grep -ivP 'Concurrency'
     ;;
-  github_ghe)
-    printf '%s\n' "${all_tests}" | grep -iP 'GithubGHE' | grep -ivP 'Concurrency'
+  github_ghe_1)
+    if [[ ${#ghe_tests[@]} -gt 0 ]]; then
+      printf '%s\n' "${ghe_tests[@]:0:${ghe_chunk_size}}"
+    fi
+    ;;
+  github_ghe_2)
+    if [[ ${#ghe_tests[@]} -gt 0 ]]; then
+      printf '%s\n' "${ghe_tests[@]:${ghe_chunk_size}:${ghe_chunk_size}}"
+    fi
+    ;;
+  github_ghe_3)
+    if [[ ${#ghe_tests[@]} -gt 0 ]]; then
+      local start_idx=$((ghe_chunk_size * 2))
+      printf '%s\n' "${ghe_tests[@]:${start_idx}:$((ghe_chunk_size + ghe_remainder))}"
+    fi
     ;;
   gitlab_bitbucket)
     printf '%s\n' "${all_tests}" | grep -iP 'Gitlab|Bitbucket' | grep -ivP 'Concurrency'
@@ -162,8 +191,8 @@ get_tests() {
     ;;
   *)
     echo "Invalid target: ${target}"
-    echo "supported targets: github_public, github_ghe, gitlab_bitbucket, gitea_1, gitea_2, gitea_3, concurrency, flaky"
-    echo "backward compat aliases: github_1, github_2, github_second_controller"
+    echo "supported targets: github_public, github_ghe_1, github_ghe_2, github_ghe_3, gitlab_bitbucket, gitea_1, gitea_2, gitea_3, concurrency, flaky"
+    echo "backward compat aliases: github_1, github_2, github_second_controller, github_ghe"
     ;;
   esac
 }
@@ -308,7 +337,7 @@ output_logs)
   ;;
 print_tests)
   set +x
-  for target in github_public github_ghe gitlab_bitbucket gitea_1 gitea_2 gitea_3 concurrency flaky; do
+  for target in github_public github_ghe_1 github_ghe_2 github_ghe_3 gitlab_bitbucket gitea_1 gitea_2 gitea_3 concurrency flaky; do
     mapfile -t tests < <(get_tests "${target}")
     echo "Tests for target: ${target} Total: ${#tests[@]}"
     printf '%s\n' "${tests[@]}"

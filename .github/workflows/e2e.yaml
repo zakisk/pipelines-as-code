@@ -44,7 +44,9 @@ jobs:
         provider:
           [
             github_public,
-            github_ghe,
+            github_ghe_1,
+            github_ghe_2,
+            github_ghe_3,
             gitlab_bitbucket,
             gitea_1,
             gitea_2,
@@ -319,7 +321,7 @@ jobs:
           nohup gosmee client --saveDir /tmp/gosmee-replay "${TEST_GITEA_SMEEURL}" "https://${CONTROLLER_DOMAIN_URL}" >> /tmp/gosmee-main.log 2>&1 &
 
       - name: Run gosmee for second controller (GHE)
-        if: matrix.provider == 'github_ghe' || matrix.provider == 'concurrency'
+        if: startsWith(matrix.provider, 'github_ghe') || matrix.provider == 'concurrency'
         run: |
           nohup gosmee client --saveDir /tmp/gosmee-replay-ghe ${{ secrets.TEST_GITHUB_SECOND_SMEE_URL }} "https://ghe.paac-127-0-0-1.nip.io" > /tmp/gosmee-ghe.log 2>&1 &
 
