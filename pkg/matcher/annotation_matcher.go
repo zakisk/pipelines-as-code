@@ -28,6 +28,7 @@ import (
 	"knative.dev/pkg/apis"
 )
 
+
 const (
 	// regex allows array of string or a single string
 	// eg. ["foo", "bar"], ["foo"] or "foo".
