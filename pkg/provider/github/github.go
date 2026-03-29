@@ -63,6 +63,7 @@ type Provider struct {
 	triggerEvent       string
 	cachedChangedFiles *changedfiles.ChangedFiles
 	commitInfo         *github.Commit
+	cachedPullRequest  *github.PullRequest
 	pacUserLogin       string // user/bot login used by PAC
 	clock              clockwork.Clock
 	graphQLClient      *graphQLClient
@@ -547,14 +548,19 @@ func (v *Provider) concatAllYamlFiles(ctx context.Context, objects []*github.Tre
 	return buf.String(), nil
 }
 
-// getPullRequest get a pull request details.
+// getPullRequest get a pull request details, caching the result for the lifetime of the event.
 func (v *Provider) getPullRequest(ctx context.Context, runevent *info.Event) (*info.Event, error) {
+	if v.cachedPullRequest != nil {
+		return runevent, nil
+	}
 	pr, _, err := wrapAPI(v, "get_pull_request", func() (*github.PullRequest, *github.Response, error) {
 		return v.Client().PullRequests.Get(ctx, runevent.Organization, runevent.Repository, runevent.PullRequestNumber)
 	})
 	if err != nil {
 		return runevent, err
 	}
+	v.cachedPullRequest = pr
+
 	// Make sure to use the Base for Default BaseBranch or there would be a potential hijack
 	runevent.DefaultBranch = pr.GetBase().GetRepo().GetDefaultBranch()
 	runevent.URL = pr.GetBase().GetRepo().GetHTMLURL()
