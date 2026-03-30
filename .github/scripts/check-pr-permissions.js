@@ -26,36 +26,6 @@ module.exports = async ({ github, context, core }) => {
   core.info(`📋 Repository: ${repoOwner}/${repoName}`);
   core.info(`🏢 Target organization: ${targetOrg}`);
 
-  // Security: On non-labeled events (opened, reopened, synchronize),
-  // remove the ok-to-test label if present. This prevents an external
-  // contributor from pushing malicious code after a maintainer approved via label.
-  if (context.payload.action !== "labeled") {
-    const currentLabels = context.payload.pull_request.labels.map(
-      (l) => l.name,
-    );
-    if (currentLabels.includes("ok-to-test")) {
-      core.info(
-        `🔒 Removing ok-to-test label due to '${context.payload.action}' event — re-approval required.`,
-      );
-      try {
-        await github.rest.issues.removeLabel({
-          owner: repoOwner,
-          repo: repoName,
-          issue_number: context.payload.pull_request.number,
-          name: "ok-to-test",
-        });
-        core.info(`   Label removed successfully.`);
-      } catch (err) {
-        // 404 is expected when multiple matrix jobs race to remove the same label
-        if (err.status === 404) {
-          core.info(`   Label already removed (likely by another matrix job).`);
-        } else {
-          core.warning(`   Failed to remove ok-to-test label: ${err.message}`);
-        }
-      }
-    }
-  }
-
   // Condition 1: Check if the user is a trusted bot.
   const trustedBots = ["dependabot[bot]", "renovate[bot]"];
   core.info(`🤖 Checking if @${actor} is a trusted bot...`);
@@ -207,8 +177,24 @@ module.exports = async ({ github, context, core }) => {
     context.payload.label.name === "ok-to-test"
   ) {
     core.info(
-      `✅ Condition met: ok-to-test label applied by @${context.actor}. Proceeding with tests.`,
+      `✅ Condition met: ok-to-test label applied by @${context.actor}. Removing label and proceeding with tests.`,
     );
+    try {
+      await github.rest.issues.removeLabel({
+        owner: repoOwner,
+        repo: repoName,
+        issue_number: context.payload.pull_request.number,
+        name: "ok-to-test",
+      });
+      core.info(`   ok-to-test label removed successfully.`);
+    } catch (err) {
+      // 404 is expected when multiple matrix jobs race to remove the same label
+      if (err.status !== 404) {
+        core.setFailed(`   Failed to remove ok-to-test label: ${err.message}`);
+        return;
+      }
+      core.info(`   Label already removed (likely by another matrix job).`);
+    }
     return;
   }
 
