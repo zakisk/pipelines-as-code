@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-github/v84/github"
+	"github.com/google/go-github/v85/github"
 	"github.com/jonboulle/clockwork"
 	"gotest.tools/v3/assert"
 	"gotest.tools/v3/env"
