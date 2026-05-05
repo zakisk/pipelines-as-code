@@ -39,7 +39,7 @@ type TestResult struct {
 	OAuth2MarkerLine int                      `json:"oauth2_marker_line"`
 }
 
-// collectGitHubAPICalls collects GitHub API calls from the controller logs.
+// collectGitHubAPICalls collects GitHub API calls from controller logs.
 // It retrieves logs from the controller pod, searches for the last OAuth2 initialization marker,
 // the Oauth2 marker shows even if the controller is not using github app, so
 // we can use it to find the start of the API calls.
