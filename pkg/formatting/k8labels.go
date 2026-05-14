@@ -23,12 +23,11 @@ var (
 )
 
 // CleanValueKubernetes conforms a string to kubernetes naming convention
-// see https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-subdomain-names
-// rules are:
-// • contain at most 63 characters
-// • contain only alphanumeric characters or '-', '.', and '_'
-// • start with an alphanumeric character
-// • end with an alphanumeric character.
+// see https://kubernetes.io/docs/concepts/overview/working-with-objects/labels/#syntax-and-character-set.
+// Valid label value:
+// * must be 63 characters or less (can be empty),
+// * unless empty, must begin and end with an alphanumeric character ([a-z0-9A-Z]),
+// * could contain dashes (-), underscores (_), dots (.), and alphanumerics between.
 func CleanValueKubernetes(s string) string {
 	// cut short if the string is already a valid label
 	if len(validation.IsValidLabelValue(s)) == 0 {
