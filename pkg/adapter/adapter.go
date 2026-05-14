@@ -34,6 +34,7 @@ import (
 	"knative.dev/pkg/system"
 )
 
+
 const globalAdapterPort = "8082"
 
 // For incoming webhook requests and GitHub Apps with many installations the handler takes long
