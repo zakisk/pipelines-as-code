@@ -90,7 +90,7 @@ func (v *Provider) Detect(req *http.Request, payload string, logger *zap.Sugared
 func hasOnlyLabelsChanged(gitEvent *gitlab.MergeEvent) bool {
 	changes := gitEvent.Changes
 
-	labelsChanged := len(changes.Labels.Previous) > 0 || len(changes.Labels.Current) > 0
+	labelsChanged := isNewLabelAdded(changes.Labels.Previous, changes.Labels.Current)
 
 	// Only Labels can change — everything else must be zero or nil
 	onlyUpdatedAtOrLabels := labelsChanged &&
@@ -107,4 +107,22 @@ func hasOnlyLabelsChanged(gitEvent *gitlab.MergeEvent) bool {
 		changes.Title.Previous == "" && changes.Title.Current == ""
 
 	return onlyUpdatedAtOrLabels
+}
+
+func isNewLabelAdded(previous, current []*gitlab.EventLabel) bool {
+	newLabels := 0
+	for _, label := range current {
+		found := false
+		for _, previousLabel := range previous {
+			if label.Title == previousLabel.Title {
+				found = true
+				break
+			}
+		}
+		if !found {
+			newLabels++
+		}
+	}
+
+	return newLabels > 0
 }
