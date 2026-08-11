@@ -27,6 +27,9 @@ import (
 
 func (p *PacRun) matchRepoPR(ctx context.Context) ([]matcher.Match, *v1alpha1.Repository, error) {
 	p.debugf("matchRepoPR: starting repo verification for url=%s", p.event.URL)
+	if p.event.URL == "" {
+		return nil, nil, fmt.Errorf("event URL is empty, cannot match repository")
+	}
 	repo, err := p.verifyRepoAndUser(ctx)
 	if err != nil {
 		return nil, nil, err
