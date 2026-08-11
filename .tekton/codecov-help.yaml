@@ -65,10 +65,12 @@ spec:
                     uncovered = []
                     for line in file_entry.get("lines", []):
                         cov = line.get("coverage", {})
-                        if line.get("added") and cov.get("head") == 0:
+                        head_cov = cov.get("head")
+                        if head_cov == 0 or (isinstance(head_cov, str) and "/" in head_cov):
                             uncovered.append({
                                 "num": line["number"]["head"],
                                 "code": line["value"],
+                                "partial": isinstance(head_cov, str),
                             })
                     if uncovered:
                         gaps[name] = uncovered
@@ -89,7 +91,8 @@ spec:
                     lines.append("Use gotest.tools/v3/assert for assertions (never testify).")
                     lines.append("Use table-driven tests with anonymous struct pattern.")
                     lines.append("Add cases to existing test tables when possible.")
-                    lines.append("Match the style in the existing _test.go files.\n")
+                    lines.append("Match the style in the existing _test.go files.")
+                    lines.append("Lines marked with >>> have zero coverage. Lines marked with !!! have partial coverage.\n")
 
                     for filepath, uncov_lines in gaps.items():
                         # Group consecutive lines into ranges
@@ -109,25 +112,29 @@ spec:
                         for s, e in ranges:
                             range_strs.append(f"L{s}-L{e}" if s != e else f"L{s}")
 
-                        lines.append(f"\n### {filepath} ({len(uncov_lines)} uncovered lines: {', '.join(range_strs)})\n")
+                        lines.append(f"\n--- {filepath} ({len(uncov_lines)} uncovered lines: {', '.join(range_strs)}) ---\n")
 
                         # Read actual source and show uncovered lines with context
                         src_path = os.path.join("/tmp/repo", filepath)
                         if os.path.exists(src_path):
                             with open(src_path) as sf:
                                 src_lines = sf.readlines()
+                            uncov_nums = {u["num"]: u.get("partial", False) for u in uncov_lines}
                             for s, e in ranges:
                                 ctx_start = max(0, s - 3)
                                 ctx_end = min(len(src_lines), e + 2)
-                                lines.append(f"Lines {s}-{e}:")
-                                lines.append("```go")
+                                lines.append(f"  Lines {s}-{e}:")
                                 for i in range(ctx_start, ctx_end):
-                                    marker = ">>>" if s <= i + 1 <= e else "   "
-                                    lines.append(f"{marker} {i+1}: {src_lines[i].rstrip()}")
-                                lines.append("```\n")
+                                    ln = i + 1
+                                    if ln in uncov_nums:
+                                        marker = "!!!" if uncov_nums[ln] else ">>>"
+                                    else:
+                                        marker = "   "
+                                    lines.append(f"    {marker} {ln}: {src_lines[i].rstrip()}")
+                                lines.append("")
 
                         test_file = filepath.replace(".go", "_test.go")
-                        lines.append(f"Existing test file: {test_file}\n")
+                        lines.append(f"  Existing test file: {test_file}\n")
 
                     lines.append("```\n")
                     lines.append("</details>\n")
@@ -137,11 +144,27 @@ spec:
 
                 PYEOF
 
-                # Post comment on the PR
-                curl -s -X POST \
-                  "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PULL_REQUEST_NUMBER}/comments" \
+                # Find existing Coverage Helper comment or create new one
+                EXISTING_COMMENT_ID=$(curl -s \
+                  "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PULL_REQUEST_NUMBER}/comments?per_page=100" \
                   -H "Authorization: token ${GITHUB_TOKEN}" \
                   -H "Accept: application/vnd.github+v3+json" \
-                  -d "$(jq -n --rawfile body /tmp/comment.md '{body: $body}')"
+                  | jq '[.[] | select(.body | startswith("## Coverage Helper"))] | last | .id')
 
-                echo "Coverage helper comment posted on PR #${PULL_REQUEST_NUMBER}"
+                PAYLOAD=$(jq -n --rawfile body /tmp/comment.md '{body: $body}')
+
+                if [ "$EXISTING_COMMENT_ID" != "null" ] && [ -n "$EXISTING_COMMENT_ID" ]; then
+                  curl -s -X PATCH \
+                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${EXISTING_COMMENT_ID}" \
+                    -H "Authorization: token ${GITHUB_TOKEN}" \
+                    -H "Accept: application/vnd.github+v3+json" \
+                    -d "$PAYLOAD"
+                  echo "Updated existing Coverage Helper comment (id: ${EXISTING_COMMENT_ID}) on PR #${PULL_REQUEST_NUMBER}"
+                else
+                  curl -s -X POST \
+                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PULL_REQUEST_NUMBER}/comments" \
+                    -H "Authorization: token ${GITHUB_TOKEN}" \
+                    -H "Accept: application/vnd.github+v3+json" \
+                    -d "$PAYLOAD"
+                  echo "Created new Coverage Helper comment on PR #${PULL_REQUEST_NUMBER}"
+                fi
