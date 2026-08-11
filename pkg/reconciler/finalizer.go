@@ -79,6 +79,9 @@ func (r *Reconciler) reportPipelineRunAsCancelled(ctx context.Context, repo *v1a
 	}
 
 	consoleURL := r.run.Clients.ConsoleUI().DetailURL(pr)
+	if consoleURL == "" {
+		logger.Warnf("no console URL available for cancelled pipelineRun %s", pr.GetName())
+	}
 	status := status.StatusOpts{
 		Conclusion:              "cancelled",
 		Text:                    fmt.Sprintf("PipelineRun %s was deleted", pr.GetName()),

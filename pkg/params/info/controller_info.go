@@ -32,6 +32,9 @@ func GetControllerInfoFromEnvOrDefault() *ControllerInfo {
 	if !ok {
 		controllerlabel = defaultControllerLabel
 	}
+	if controllerlabel == "" {
+		controllerlabel = defaultControllerLabel
+	}
 	controllerSecret, ok := os.LookupEnv("PAC_CONTROLLER_SECRET")
 	if !ok {
 		controllerSecret = DefaultPipelinesAscodeSecretName
