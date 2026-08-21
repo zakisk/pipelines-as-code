@@ -73,6 +73,7 @@ func GetGitInfo(dir string) *Info {
 	}
 	gitURL = strings.TrimSpace(gitURL)
 	gitURL = strings.TrimSuffix(gitURL, ".git")
+	gitURL = strings.TrimSuffix(gitURL, "/")
 
 	// convert github and probably others ssh access format into https
 	// i think it only fails with bitbucket data center

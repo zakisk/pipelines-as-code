@@ -29,6 +29,9 @@ func (v *Provider) Detect(req *http.Request, payload string, logger *zap.Sugared
 	if eventType == "" {
 		return false, false, logger, "", nil
 	}
+	if eventType == "ping" {
+		return true, false, logger, "ping event received", nil
+	}
 
 	// it is a Github event
 	isGH = true
