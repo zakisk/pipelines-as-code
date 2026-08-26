@@ -13,6 +13,7 @@ const (
 	ConclusionPending   Conclusion = "pending"
 	ConclusionSkipped   Conclusion = "skipped"
 	ConclusionSuccess   Conclusion = "success"
+	ConclusionTimedout  Conclusion = "timed_out"
 
 	//nolint:misspell
 	// NOTE: some VCS systems use "canceled" with one "l", so Provider
