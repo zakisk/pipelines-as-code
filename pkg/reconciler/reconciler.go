@@ -144,6 +144,9 @@ func (r *Reconciler) reconcileKind(ctx context.Context, pr *tektonv1.PipelineRun
 	ctx = info.StoreNS(ctx, system.Namespace())
 	logger := logging.FromContext(ctx).With("namespace", pr.GetNamespace())
 
+	if pr.GetName() == "" {
+		return fmt.Errorf("pipelineRun name is empty")
+	}
 	logger.Debugf("reconciling pipelineRun %s/%s", pr.GetNamespace(), pr.GetName())
 
 	// make sure we have the latest pipelinerun to reconcile, since there is something updating at the same time

@@ -71,6 +71,7 @@ func (s *SecretFromRepository) Get(ctx context.Context) error {
 	// if we don't have a provider token in repo crd we won't be able to do much with it
 	// let it go and it will fail later on when doing SetClients or success if it was done from a github app
 	if s.Event.Provider.Token == "" {
+		s.Logger.Warnf("secretFromRepository: provider token is empty for repo %s/%s", s.Repo.Namespace, s.Repo.Name)
 		return nil
 	}
 	s.Event.Provider.User = s.Repo.Spec.GitProvider.User

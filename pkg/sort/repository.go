@@ -19,5 +19,8 @@ func (repositorys repositorySortByCompletionTime) Less(i, j int) bool {
 }
 
 func RepositorySortByCreationOldestTime(repositorys []pacv1alpha1.Repository) {
+	if len(repositorys) <= 1 {
+		return
+	}
 	sort.Sort(repositorySortByCompletionTime(repositorys))
 }

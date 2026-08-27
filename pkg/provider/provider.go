@@ -73,6 +73,9 @@ func GetMarkdownTemplate(commentType CommentType) string {
 }
 
 func Valid(value string, validValues []string) bool {
+	if value == "" {
+		return false
+	}
 	for _, v := range validValues {
 		if v == value {
 			return true
