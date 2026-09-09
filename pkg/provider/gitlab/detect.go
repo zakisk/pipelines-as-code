@@ -20,6 +20,9 @@ func (v *Provider) Detect(req *http.Request, payload string, logger *zap.Sugared
 	if event == "" {
 		return false, false, logger, "no gitlab event", nil
 	}
+	if event == "System Hook" {
+		return false, false, logger, "system hooks are not supported", nil
+	}
 
 	// it is a GitLab event
 	isGL = true

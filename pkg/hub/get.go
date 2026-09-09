@@ -16,12 +16,16 @@ package hub
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/openshift-pipelines/pipelines-as-code/pkg/params"
 )
 
 // GetResource returns a resource from the hub.
 func GetResource(ctx context.Context, cs *params.Run, catalogName, resource, kind string) (string, error) {
+	if resource == "" || kind == "" {
+		return "", fmt.Errorf("resource and kind must not be empty")
+	}
 	client, err := NewClient(ctx, cs, catalogName)
 	if err != nil {
 		return "", err

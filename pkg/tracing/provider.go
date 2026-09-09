@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"strconv"
+	"strings"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracegrpc"
@@ -41,6 +42,9 @@ func New(logger *zap.SugaredLogger) *TracerProvider {
 	if os.Getenv(EnvOTLPEndpoint) == "" {
 		logger.Info("OpenTelemetry not configured (OTLP endpoint missing)")
 		return passthroughProvider()
+	}
+	if strings.HasPrefix(os.Getenv(EnvOTLPEndpoint), "http://localhost") {
+		logger.Warn("OTLP endpoint points to localhost, traces may not reach a collector in production")
 	}
 	if os.Getenv(EnvTracesSampler) == "" {
 		logger.Info("OpenTelemetry not configured (sampler missing)")

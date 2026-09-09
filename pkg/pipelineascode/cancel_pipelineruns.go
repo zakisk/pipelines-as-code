@@ -78,6 +78,7 @@ func (p *PacRun) cancelAllInProgressBelongingToClosedPullRequest(ctx context.Con
 		msg := fmt.Sprintf("no pipelinerun found for repository: %v and pullRequest %v",
 			p.event.Repository, p.event.PullRequestNumber)
 		p.eventEmitter.EmitMessage(repo, zap.InfoLevel, "CancelInProgress", msg)
+		p.debugf("cancelAllInProgress: nothing to cancel for repo=%s pr=%d", p.event.Repository, p.event.PullRequestNumber)
 		return nil
 	}
 	p.debugf("cancelAllInProgress: found %d pipelineruns to consider", len(prs.Items))

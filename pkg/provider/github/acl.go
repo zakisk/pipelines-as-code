@@ -18,6 +18,9 @@ import (
 // we  check the membership of the team allowed
 // if the team is not found we explicitly disallow the policy, user have to correct the setting.
 func (v *Provider) CheckPolicyAllowing(ctx context.Context, event *info.Event, allowedTeams []string) (bool, string) {
+	if len(allowedTeams) == 0 {
+		return false, "no teams configured in policy"
+	}
 	for _, team := range allowedTeams {
 		// TODO: caching
 		opt := github.ListOptions{PerPage: v.PaginedNumber}

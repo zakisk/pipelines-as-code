@@ -35,6 +35,8 @@ const (
 	reValidateTag = `^\[(.*)\]$|^[^[\]\s]*$`
 	// maximum number of characters to display in logs for gitops comments.
 	maxCommentLogLength = 160
+	// maximum number of annotation keys to evaluate per PipelineRun.
+	maxAnnotationKeys = 50
 )
 
 // NoFailedPipelineToRetestError is an error type returned when /retest or
