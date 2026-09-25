@@ -70,6 +70,9 @@ func (v *Provider) Detect(req *http.Request, payload string, logger *zap.Sugared
 	case *types.PushRequestEvent:
 		if provider.Valid(event, pushRepo) {
 			if e.Push.Changes != nil {
+				if len(e.Push.Changes) == 0 {
+					return setLoggerAndProceed(false, "push event has empty changes list", nil)
+				}
 				return setLoggerAndProceed(true, "", nil)
 			}
 		}

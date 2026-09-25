@@ -55,7 +55,11 @@ func CleanValueKubernetes(s string) string {
 // for a kubernetes Label (63 chars).
 func cutToLabelValueMaxLength(s string) string {
 	if len(s) > validation.LabelValueMaxLength {
-		return s[len(s)-validation.LabelValueMaxLength:]
+		trimmed := s[len(s)-validation.LabelValueMaxLength:]
+		if strings.HasPrefix(trimmed, ".") || strings.HasPrefix(trimmed, "-") {
+			trimmed = trimmed[1:]
+		}
+		return trimmed
 	}
 	return s
 }

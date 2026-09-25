@@ -65,6 +65,9 @@ func (v *Provider) checkMembership(ctx context.Context, event *info.Event, useri
 
 	if member.ID != 0 && member.ID == userid {
 		v.memberCache[userid] = true
+		if v.Logger != nil {
+			v.Logger.Debugf("user %d is a member of project %d", userid, v.targetProjectID)
+		}
 		return true
 	}
 

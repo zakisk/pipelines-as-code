@@ -90,6 +90,9 @@ func parseIncomingPayload(request *http.Request, payloadBody []byte) (incomingPa
 }
 
 func compareSecret(incomingSecret, secretValue string) bool {
+	if incomingSecret == "" || secretValue == "" {
+		return false
+	}
 	return subtle.ConstantTimeCompare([]byte(incomingSecret), []byte(secretValue)) != 0
 }
 

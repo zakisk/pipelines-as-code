@@ -1,0 +1,170 @@
+---
+apiVersion: tekton.dev/v1beta1
+kind: PipelineRun
+metadata:
+  name: "coverage-helper"
+  annotations:
+    pipelinesascode.tekton.dev/on-comment: "^## \\[Codecov\\]"
+spec:
+  pipelineSpec:
+    tasks:
+      - name: generate-coverage-prompt
+        displayName: "Generate LLM coverage prompt"
+        taskSpec:
+          steps:
+            - name: fetch-and-format
+              image: registry.access.redhat.com/ubi9/ubi-minimal
+              env:
+                - name: REPO_OWNER
+                  value: "{{ repo_owner }}"
+                - name: REPO_NAME
+                  value: "{{ repo_name }}"
+                - name: PULL_REQUEST_NUMBER
+                  value: "{{ pull_request_number }}"
+                - name: REPO_URL
+                  value: "{{ repo_url }}"
+                - name: SOURCE_BRANCH
+                  value: "{{ source_branch }}"
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: "{{ git_auth_secret }}"
+                      key: "git-provider-token"
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                microdnf install -y git jq python3
+
+                # Clone the repo at the PR head
+                git clone --depth=1 --branch="${SOURCE_BRANCH}" "${REPO_URL}" /tmp/repo
+                cd /tmp/repo
+
+                # Fetch uncovered added lines from Codecov compare API
+                CODECOV_URL="https://api.codecov.io/api/v2/github/${REPO_OWNER}/repos/${REPO_NAME}/compare/?pullid=${PULL_REQUEST_NUMBER}"
+
+                curl -s "${CODECOV_URL}" -H "accept: application/json" -o /tmp/codecov.json
+
+                # Extract uncovered added lines and format as LLM prompt
+                python3 << 'PYEOF'
+                import json, os
+
+                with open("/tmp/codecov.json") as f:
+                    data = json.load(f)
+
+                gaps = {}
+                for file_entry in data.get("files", []):
+                    if not file_entry.get("has_diff"):
+                        continue
+                    name = file_entry["name"]
+                    if isinstance(name, dict):
+                        name = name.get("head", "")
+                    # skip test files and generated files
+                    if name.endswith("_test.go") or "zz_generated" in name or "vendor/" in name:
+                        continue
+                    uncovered = []
+                    for line in file_entry.get("lines", []):
+                        cov = line.get("coverage", {})
+                        head_cov = cov.get("head")
+                        if head_cov == 0 or (isinstance(head_cov, str) and "/" in head_cov):
+                            uncovered.append({
+                                "num": line["number"]["head"],
+                                "code": line["value"],
+                                "partial": isinstance(head_cov, str),
+                            })
+                    if uncovered:
+                        gaps[name] = uncovered
+
+                if not gaps:
+                    with open("/tmp/comment.md", "w") as out:
+                        out.write("## Coverage Helper\n\n")
+                        out.write(":white_check_mark: All new lines in this PR have test coverage. Nothing to do.\n")
+                else:
+                    total_uncovered = sum(len(v) for v in gaps.values())
+                    lines = []
+                    lines.append("## Coverage Helper\n")
+                    lines.append(f":mag: Found **{total_uncovered} uncovered lines** across **{len(gaps)} files** in this PR.\n")
+                    lines.append("<details><summary>Click to expand LLM prompt — copy and paste into your AI assistant</summary>\n")
+                    lines.append("```text")
+                    lines.append("I have a Go project. The following lines in my PR have no test coverage.")
+                    lines.append("Write unit tests for each uncovered path.")
+                    lines.append("Use gotest.tools/v3/assert for assertions (never testify).")
+                    lines.append("Use table-driven tests with anonymous struct pattern.")
+                    lines.append("Add cases to existing test tables when possible.")
+                    lines.append("Match the style in the existing _test.go files.")
+                    lines.append("Lines marked with >>> have zero coverage. Lines marked with !!! have partial coverage.\n")
+
+                    for filepath, uncov_lines in gaps.items():
+                        # Group consecutive lines into ranges
+                        ranges = []
+                        start = uncov_lines[0]["num"]
+                        end = start
+                        for u in uncov_lines[1:]:
+                            if u["num"] == end + 1:
+                                end = u["num"]
+                            else:
+                                ranges.append((start, end))
+                                start = u["num"]
+                                end = start
+                        ranges.append((start, end))
+
+                        range_strs = []
+                        for s, e in ranges:
+                            range_strs.append(f"L{s}-L{e}" if s != e else f"L{s}")
+
+                        lines.append(f"\n--- {filepath} ({len(uncov_lines)} uncovered lines: {', '.join(range_strs)}) ---\n")
+
+                        # Read actual source and show uncovered lines with context
+                        src_path = os.path.join("/tmp/repo", filepath)
+                        if os.path.exists(src_path):
+                            with open(src_path) as sf:
+                                src_lines = sf.readlines()
+                            uncov_nums = {u["num"]: u.get("partial", False) for u in uncov_lines}
+                            for s, e in ranges:
+                                ctx_start = max(0, s - 3)
+                                ctx_end = min(len(src_lines), e + 2)
+                                lines.append(f"  Lines {s}-{e}:")
+                                for i in range(ctx_start, ctx_end):
+                                    ln = i + 1
+                                    if ln in uncov_nums:
+                                        marker = "!!!" if uncov_nums[ln] else ">>>"
+                                    else:
+                                        marker = "   "
+                                    lines.append(f"    {marker} {ln}: {src_lines[i].rstrip()}")
+                                lines.append("")
+
+                        test_file = filepath.replace(".go", "_test.go")
+                        lines.append(f"  Existing test file: {test_file}\n")
+
+                    lines.append("```\n")
+                    lines.append("</details>\n")
+
+                    with open("/tmp/comment.md", "w") as out:
+                        out.write("\n".join(lines))
+
+                PYEOF
+
+                # Find existing Coverage Helper comment or create new one
+                EXISTING_COMMENT_ID=$(curl -s \
+                  "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PULL_REQUEST_NUMBER}/comments?per_page=100" \
+                  -H "Authorization: token ${GITHUB_TOKEN}" \
+                  -H "Accept: application/vnd.github+v3+json" \
+                  | jq '[.[] | select(.body | startswith("## Coverage Helper"))] | last | .id')
+
+                PAYLOAD=$(jq -n --rawfile body /tmp/comment.md '{body: $body}')
+
+                if [ "$EXISTING_COMMENT_ID" != "null" ] && [ -n "$EXISTING_COMMENT_ID" ]; then
+                  curl -s -X PATCH \
+                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/comments/${EXISTING_COMMENT_ID}" \
+                    -H "Authorization: token ${GITHUB_TOKEN}" \
+                    -H "Accept: application/vnd.github+v3+json" \
+                    -d "$PAYLOAD"
+                  echo "Updated existing Coverage Helper comment (id: ${EXISTING_COMMENT_ID}) on PR #${PULL_REQUEST_NUMBER}"
+                else
+                  curl -s -X POST \
+                    "https://api.github.com/repos/${REPO_OWNER}/${REPO_NAME}/issues/${PULL_REQUEST_NUMBER}/comments" \
+                    -H "Authorization: token ${GITHUB_TOKEN}" \
+                    -H "Accept: application/vnd.github+v3+json" \
+                    -d "$PAYLOAD"
+                  echo "Created new Coverage Helper comment on PR #${PULL_REQUEST_NUMBER}"
+                fi

@@ -62,6 +62,10 @@ func (v *Provider) CreateComment(_ context.Context, _ *info.Event, _, _ string) 
 }
 
 func (v *Provider) SetPacInfo(pacInfo *info.PacOpts) {
+	if pacInfo == nil {
+		v.Logger.Warn("SetPacInfo called with nil pacInfo")
+		return
+	}
 	v.pacInfo = pacInfo
 }
 

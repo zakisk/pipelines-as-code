@@ -64,6 +64,9 @@ func (p *CustomParams) applyIncomingParams(ret map[string]string) map[string]str
 // matched true.
 func (p *CustomParams) GetParams(ctx context.Context) (map[string]string, map[string]any, error) {
 	stdParams, changedFiles := p.makeStandardParamsFromEvent(ctx)
+	if stdParams == nil {
+		stdParams = map[string]string{}
+	}
 	resolvedParams, mapFilters, parsedFromComment := map[string]string{}, map[string]string{}, map[string]string{}
 	if p.event.TriggerComment != "" {
 		parsedFromComment = opscomments.ParseKeyValueArgs(p.event.TriggerComment)
