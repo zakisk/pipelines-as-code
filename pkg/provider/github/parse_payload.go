@@ -736,6 +736,15 @@ func (v *Provider) processEvent(ctx context.Context, event *info.Event, eventInt
 		for _, label := range gitEvent.GetPullRequest().Labels {
 			processedEvent.PullRequestLabel = append(processedEvent.PullRequestLabel, label.GetName())
 		}
+	case *github.ReleaseEvent:
+		if v.ghClient == nil {
+			return nil, fmt.Errorf("no github client has been initialized, " +
+				"exiting... (hint: did you forget setting a secret on your repo?)")
+		}
+		processedEvent, err = v.handleReleaseEvent(ctx, gitEvent)
+		if err != nil {
+			return nil, err
+		}
 	default:
 		return nil, errors.New("this event is not supported")
 	}
@@ -1087,6 +1096,58 @@ func (v *Provider) handleCommitCommentEvent(ctx context.Context, event *github.C
 	runevent.BaseBranch = branchName
 
 	v.Logger.Infof("github commit_comment: pipelinerun %s on %s/%s#%s has been requested", action, runevent.Organization, runevent.Repository, runevent.SHA)
+	return runevent, nil
+}
+
+func (v *Provider) handleReleaseEvent(ctx context.Context, event *github.ReleaseEvent) (*info.Event, error) {
+	runevent := info.NewEvent()
+	if event.GetRepo() == nil {
+		return nil, errors.New("error parsing payload the repository should not be nil")
+	}
+	runevent.Organization = event.GetRepo().GetOwner().GetLogin()
+	runevent.Repository = event.GetRepo().GetName()
+	runevent.URL = event.GetRepo().GetHTMLURL()
+	runevent.Sender = event.GetSender().GetLogin()
+	v.userType = event.GetSender().GetType()
+	runevent.HeadURL = runevent.URL
+	runevent.BaseURL = runevent.HeadURL
+	runevent.TriggerTarget = triggertype.Release
+	runevent.EventType = triggertype.Release.String()
+	v.RepositoryIDs = []int64{event.GetRepo().GetID()}
+
+	tagName := event.GetRelease().GetTagName()
+	tagPath := fmt.Sprintf("refs/tags/%s", tagName)
+	// here in GitHub TAG_SHA and the commit which is tagged for a tag are different
+	// so we need to get the ref for the tag and then get the tag object to get the tag SHA
+	ref, _, err := wrapAPI(v, "get_ref", func() (*github.Reference, *github.Response, error) {
+		return v.Client().Git.GetRef(ctx, runevent.Organization, runevent.Repository, tagPath)
+	})
+	if err != nil {
+		return runevent, fmt.Errorf("error getting ref for tag %s: %w", tagName, err)
+	}
+
+	switch ref.GetObject().GetType() {
+	case "tag":
+		// annotated tag - get the tag object to resolve the commit SHA
+		tag, _, err := wrapAPI(v, "get_tag", func() (*github.Tag, *github.Response, error) {
+			return v.Client().Git.GetTag(ctx, runevent.Organization, runevent.Repository, ref.GetObject().GetSHA())
+		})
+		if err != nil {
+			return runevent, fmt.Errorf("error getting tag %s: %w", tagName, err)
+		}
+		runevent.SHA = tag.GetObject().GetSHA()
+	case "commit":
+		// lightweight tag - ref contains the commit SHA directly.
+		// trying to get the tag object would return an error.
+		runevent.SHA = ref.GetObject().GetSHA()
+	default:
+		return runevent, fmt.Errorf("invalid object type for tag %s: %s", tagName, ref.GetObject().GetType())
+	}
+
+	runevent.HeadBranch = tagPath
+	runevent.BaseBranch = tagPath
+
+	v.Logger.Infof("github release: pipelineruns on %s/%s#%s has been requested", runevent.Organization, runevent.Repository, runevent.SHA)
 	return runevent, nil
 }
 
