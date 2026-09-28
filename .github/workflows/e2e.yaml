@@ -135,6 +135,11 @@ jobs:
           github-token: ${{ secrets.GH_TOKEN }}
           team-slugs: ${{ env.TARGET_TEAM_SLUGS }}
 
+      - name: Check GitHub API rate limits
+        env:
+          TEST_PROVIDER: ${{ matrix.provider }}
+        run: ./hack/gh-workflow-ci.sh check_e2e_rate_limits
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: "go.mod"
