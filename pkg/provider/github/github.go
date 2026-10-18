@@ -761,8 +761,10 @@ func (v *Provider) populateRunEventFromPullRequest(runevent *info.Event, pr *git
 	// Make sure to use the Base for Default BaseBranch or there would be a potential hijack
 	runevent.DefaultBranch = pr.GetBase().GetRepo().GetDefaultBranch()
 	runevent.URL = pr.GetBase().GetRepo().GetHTMLURL()
-	runevent.SHA = pr.GetHead().GetSHA()
-	runevent.SHAURL = fmt.Sprintf("%s/commit/%s", pr.GetHTMLURL(), pr.GetHead().GetSHA())
+	if runevent.SHA == "" {
+		runevent.SHA = pr.GetHead().GetSHA()
+	}
+	runevent.SHAURL = fmt.Sprintf("%s/commit/%s", pr.GetHTMLURL(), runevent.SHA)
 	runevent.PullRequestTitle = pr.GetTitle()
 
 	// TODO: check if we really need this
