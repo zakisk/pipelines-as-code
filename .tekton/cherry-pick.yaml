@@ -1,0 +1,186 @@
+apiVersion: tekton.dev/v1
+kind: PipelineRun
+metadata:
+  name: cherry-pick
+  annotations:
+    pipelinesascode.tekton.dev/on-comment: '^/cherry-pick[ \t]+branch:[A-Za-z0-9][A-Za-z0-9._/-]*[ \t]*$'
+    pipelinesascode.tekton.dev/cancel-in-progress: "true"
+spec:
+  timeouts:
+    pipeline: 30m0s
+  taskRunTemplate:
+    podTemplate:
+      securityContext:
+        fsGroup: 65532
+  workspaces:
+    - name: source
+      emptyDir: {}
+    - name: git-auth
+      secret:
+        secretName: '{{ git_auth_secret }}'
+  pipelineSpec:
+    workspaces:
+      - name: source
+      - name: git-auth
+    tasks:
+      - name: cherry-pick
+        workspaces:
+          - name: source
+            workspace: source
+          - name: git-auth
+            workspace: git-auth
+        taskSpec:
+          workspaces:
+            - name: source
+            - name: git-auth
+          steps:
+            - name: fetch-repo
+              displayName: "Fetch Repository"
+              ref:
+                resolver: hub
+                params:
+                  - name: catalog
+                    value: git-clone-stepaction
+                  - name: type
+                    value: artifact
+                  - name: kind
+                    value: stepaction
+                  - name: name
+                    value: git-clone
+                  - name: version
+                    value: "1.7.0"
+              params:
+                - name: output-path
+                  value: $(workspaces.source.path)
+                - name: basic-auth-path
+                  value: $(workspaces.git-auth.path)
+                - name: url
+                  value: '{{ repo_url }}'
+                - name: revision
+                  value: '{{ revision }}'
+                - name: depth
+                  value: '0'
+                - name: submodules
+                  value: 'false'
+                - name: verbose
+                  value: 'false'
+            - name: update-shared-pr
+              image: registry.gitlab.com/gitlab-ci-utils/curl-jq:4.0.3
+              workingDir: $(workspaces.source.path)
+              securityContext:
+                runAsNonRoot: true
+                runAsUser: 65532
+              env:
+                - name: HOME
+                  value: /tekton/home
+                - name: GIT_TERMINAL_PROMPT
+                  value: '0'
+                - name: REPO_OWNER
+                  value: '{{ repo_owner }}'
+                - name: REPO_NAME
+                  value: '{{ repo_name }}'
+                - name: SOURCE_SHA
+                  value: '{{ revision }}'
+                - name: TRIGGER_COMMENT
+                  value: '{{ trigger_comment }}'
+                - name: GITHUB_EVENT
+                  value: "{{ headers['X-Github-Event'] }}"
+                - name: GITHUB_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: '{{ git_auth_secret }}'
+                      key: git-provider-token
+              script: |
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                [[ $GITHUB_EVENT == commit_comment ]] || { echo 'Comment on a commit page' >&2; exit 1; }
+                git config user.name 'Pipelines-as-Code'
+                git config user.email 'pipelines-as-code@users.noreply.github.com'
+                # shellcheck disable=SC2016 # Git expands the token when requesting credentials.
+                git config credential.helper '!f() { printf "%s\n" "username=x-access-token" "password=$GITHUB_TOKEN"; }; f'
+
+                api() {
+                  local path=$1
+                  shift
+                  curl -fsS -H "Authorization: Bearer $GITHUB_TOKEN" \
+                    -H 'Accept: application/vnd.github+json' -H 'Content-Type: application/json' \
+                    -H 'X-GitHub-Api-Version: 2022-11-28' \
+                    "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME$path" "$@"
+                }
+
+                find_prs() {
+                  local page=1 rows
+                  while :; do
+                    rows=$(api /pulls --get --data-urlencode 'state=open' --data-urlencode "base=$1" \
+                      --data-urlencode 'per_page=100' --data-urlencode "page=$page") || return 1
+                    jq -c --arg title "$2" --arg legacy_title "Cherry-picks for $1" \
+                      '.[] | select(.title == $title or .title == $legacy_title)' <<< "$rows"
+                    [[ $(jq length <<< "$rows") -eq 100 ]] || break
+                    page=$((page + 1))
+                  done
+                }
+
+                pick=(-x)
+                [[ $(git show -s --format=%p "$SOURCE_SHA") != *' '* ]] || pick+=(-m 1)
+                read -r -a command <<< "$TRIGGER_COMMENT"
+
+                for argument in "${command[@]:1}"; do
+                  IFS=: read -r key target <<< "$argument"
+                  [[ $key == branch ]] || { echo 'Use branch:<target>' >&2; exit 1; }
+                  echo "Processing $SOURCE_SHA -> $target"
+                  git check-ref-format --branch "$target" >/dev/null
+                  git fetch --no-tags origin "refs/heads/$target"
+                  base=$(git rev-parse FETCH_HEAD)
+                  if git merge-base --is-ancestor "$SOURCE_SHA" "$base"; then
+                    continue
+                  fi
+                  title="DNM: cherry-pick to $target"
+                  head="pac/cherry-pick/$target"
+                  target_hash=$(printf '%s' "$target" | git hash-object --stdin)
+                  legacy_prefix="pac/cherry-pick/${target_hash:0:16}/"
+                  prs=$(find_prs "$target" "$title" | jq -s .)
+                  [[ $(jq length <<< "$prs") -le 1 ]] || { echo "Multiple open PRs: $title" >&2; exit 1; }
+                  pr=$(jq -c '.[0] // empty' <<< "$prs")
+                  push=(git push)
+
+                  if [[ -n $pr ]]; then
+                    head=$(jq -r '.head.ref' <<< "$pr")
+                    [[ ($head == "pac/cherry-pick/$target" || $head == "$legacy_prefix"*) && $(jq -r '.head.repo.full_name | ascii_downcase' <<< "$pr") == "$REPO_OWNER/$REPO_NAME" ]] || { echo 'Matching PR does not use a managed branch in this repository' >&2; exit 1; }
+                    git fetch --no-tags origin "refs/heads/$head"
+                    git checkout --detach FETCH_HEAD
+                  else
+                    # Reuse the branch for a fresh batch only if its remote tip stays unchanged.
+                    previous=$(git ls-remote --heads origin "refs/heads/$head" | cut -f1)
+                    push+=(--force-with-lease="refs/heads/$head:$previous")
+                    git checkout --detach "$base"
+                  fi
+
+                  if git log --format=%B "$base..HEAD" | grep -F "(cherry picked from commit $SOURCE_SHA)" >/dev/null; then
+                    echo "Already included: $target"
+                  else
+                    if ! git cherry-pick "${pick[@]}" "$SOURCE_SHA"; then
+                      if [[ -z $(git diff --name-only --diff-filter=U) ]] &&
+                         git rev-parse --verify CHERRY_PICK_HEAD >/dev/null 2>&1 &&
+                         git diff --quiet && git diff --cached --quiet; then
+                        git cherry-pick --skip
+                        echo "Already applied: $target"
+                        continue
+                      fi
+                      git cherry-pick --abort
+                      echo "Cherry-pick conflict on $target" >&2
+                      exit 1
+                    fi
+                    "${push[@]}" origin "HEAD:refs/heads/$head"
+                  fi
+
+                  commits=$(git log --reverse --format='- %H %s' "$base..HEAD")
+                  body=$(printf 'Cherry-picks to %s:\n\n%s' "$target" "$commits")
+                  payload=$(jq -n --arg title "$title" --arg body "$body" '{title: $title, body: $body}')
+                  if [[ -n $pr ]]; then
+                    api "/pulls/$(jq -r '.number' <<< "$pr")" --request PATCH --data "$payload" | jq -r '.html_url'
+                  else
+                    payload=$(jq --arg head "$head" --arg base "$target" '. + {head: $head, base: $base}' <<< "$payload")
+                    api /pulls --request POST --data "$payload" | jq -r '.html_url'
+                  fi
+                done
