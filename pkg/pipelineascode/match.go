@@ -83,7 +83,8 @@ func (p *PacRun) verifyRepoAndUser(ctx context.Context) (*v1alpha1.Repository, e
 	}
 	p.debugf("verifyRepoAndUser: authenticated client setup complete")
 
-	// Get the SHA commit info, we want to get the URL and commit title
+	// Get the SHA commit info, we want to get the URL and commit title.
+	// Skip if already populated (e.g., by prior API calls).
 	if p.event.SHA == "" || p.event.SHATitle == "" || p.event.SHAURL == "" {
 		p.debugf("verifyRepoAndUser: fetching commit info")
 		if err = p.vcx.GetCommitInfo(ctx, p.event); err != nil {
