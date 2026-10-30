@@ -1093,6 +1093,7 @@ func (v *Provider) CreateToken(_ context.Context, _ []string, _ *info.Event) (st
 }
 
 // isHeadCommitOfBranch validates that branch exists and the SHA is HEAD commit of the branch.
+// This ensures GitOps commands only target the latest commit of a specified branch.
 func (v *Provider) isHeadCommitOfBranch(runevent *info.Event, branchName string) error {
 	if v.gitlabClient == nil {
 		return fmt.Errorf("no gitlab client has been initialized, " +
