@@ -67,8 +67,9 @@ func TestCheckStateAndEnqueue(t *testing.T) {
 		WorkQueueName: "ValidationWebhook",
 		Logger:        logger.Named("ValidationWebhook"),
 	})
+	defer impl.WorkQueue().ShutDown()
 
-	// Create a new PipelineRun object with the "started" state label.
+	// Create a new PipelineRun object with the "started" state annotation.
 	testPR := tektontest.MakePRStatus("namespace", "force-me", []pipelinev1.ChildStatusReference{
 		tektontest.MakeChildStatusReference("first"),
 		tektontest.MakeChildStatusReference("last"),
@@ -79,10 +80,16 @@ func TestCheckStateAndEnqueue(t *testing.T) {
 	})
 
 	// Call the checkStateAndEnqueue function with the PipelineRun object.
-	checkStateAndEnqueue(impl)(testPR)
+	checkStateAndEnqueue(impl, logger)(testPR)
 	assert.Equal(t, impl.Name, "ValidationWebhook")
 	assert.Equal(t, impl.Concurrency, 2)
-	assert.Equal(t, catcher.FilterMessageSnippet("Adding to queue namespace/force-me").Len(), 1)
+	assert.Equal(t, catcher.FilterMessageSnippet("Adding to queue namespace/force-me (depth:").Len(), 1)
+	entries := catcher.FilterMessage("Requested delayed PipelineRun requeue").All()
+	assert.Equal(t, len(entries), 1)
+	assert.Equal(t, entries[0].Level, zap.InfoLevel)
+	assert.DeepEqual(t, entries[0].ContextMap(), map[string]any{
+		"namespace": "namespace", "pipeline-run": "force-me", "delay": "45m0s",
+	})
 }
 
 func TestCheckStateAndEnqueueSkipsObjects(t *testing.T) {
@@ -115,7 +122,7 @@ func TestCheckStateAndEnqueueSkipsObjects(t *testing.T) {
 				Logger:        logger.Named("ValidationWebhook"),
 			})
 
-			checkStateAndEnqueue(impl)(tt.obj)
+			checkStateAndEnqueue(impl, logger)(tt.obj)
 
 			assert.Equal(t, catcher.FilterMessageSnippet("Adding to queue").Len(), 0)
 		})

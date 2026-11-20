@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	stderrors "errors"
 	"fmt"
+	"time"
 
 	tektonv1 "github.com/tektoncd/pipeline/pkg/apis/pipeline/v1"
 	pipelinerunreconciler "github.com/tektoncd/pipeline/pkg/client/injection/reconciler/pipeline/v1/pipelinerun"
@@ -47,6 +48,7 @@ type Reconciler struct {
 	qm                queuepkg.ManagerInterface
 	metrics           *prmetrics.Recorder
 	eventEmitter      *events.EventEmitter
+	enqueueAfter      func(any, time.Duration)
 }
 
 var (
@@ -118,6 +120,10 @@ func (r *Reconciler) ReconcileKind(ctx context.Context, pr *tektonv1.PipelineRun
 	reconcileRun := *r.run
 	reconciler := *r
 	reconciler.run = &reconcileRun
+	// A delayed dequeue does not generate an informer event. Rearm it here.
+	if r.enqueueAfter != nil {
+		requeueActivePipelineRun(pr, r.enqueueAfter, logging.FromContext(ctx))
+	}
 	return reconciler.reconcileKind(ctx, pr)
 }
 
@@ -147,7 +153,7 @@ func (r *Reconciler) reconcileKind(ctx context.Context, pr *tektonv1.PipelineRun
 	// reconciles do not log under each other's fields.
 	r.eventEmitter = r.eventEmitter.WithLogger(logger.With("pipeline-run", pr.GetName()))
 
-	logger.Debugf("reconciling pipelineRun %s/%s", pr.GetNamespace(), pr.GetName())
+	logger.Debugf("reconciling pipelineRun %s/%s with resource version %s", pr.GetNamespace(), pr.GetName(), pr.GetResourceVersion())
 
 	// make sure we have the latest pipelinerun to reconcile, since there is something updating at the same time
 	lpr, err := r.run.Clients.Tekton.TektonV1().PipelineRuns(pr.GetNamespace()).Get(ctx, pr.GetName(), metav1.GetOptions{})

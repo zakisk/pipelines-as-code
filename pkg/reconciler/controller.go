@@ -89,12 +89,13 @@ func NewController() func(context.Context, configmap.Watcher) *controller.Impl {
 			eventEmitter:      events.NewEventEmitter(run.Clients.Kube, run.Clients.Log),
 		}
 		impl := tektonPipelineRunReconcilerv1.NewImpl(ctx, r, ctrlOpts())
+		r.enqueueAfter = impl.EnqueueAfter
 
 		if err := r.qm.InitQueues(ctx, run.Clients.Tekton, run.Clients.PipelineAsCode); err != nil {
 			log.Fatal("failed to init queues", err)
 		}
 
-		if _, err := pipelineRunInformer.Informer().AddEventHandler(controller.HandleAll(checkStateAndEnqueue(impl))); err != nil {
+		if _, err := pipelineRunInformer.Informer().AddEventHandler(controller.HandleAll(checkStateAndEnqueue(impl, log))); err != nil {
 			logging.FromContext(ctx).Panicf("Couldn't register PipelineRun informer event handler: %v", err)
 		}
 
@@ -106,17 +107,30 @@ func NewController() func(context.Context, configmap.Watcher) *controller.Impl {
 	}
 }
 
-// enqueue only the pipelineruns which are in `started` state
-// pipelinerun will have a label `pipelinesascode.tekton.dev/state` to describe the state.
-func checkStateAndEnqueue(impl *controller.Impl) func(obj any) {
+// Enqueue PaC PipelineRuns immediately, including terminal and deletion events.
+func checkStateAndEnqueue(impl *controller.Impl, log *zap.SugaredLogger) func(obj any) {
 	return func(obj any) {
 		object, err := kmeta.DeletionHandlingAccessor(obj)
-		if err == nil {
-			_, exist := object.GetAnnotations()[keys.State]
-			if exist {
-				impl.EnqueueKey(types.NamespacedName{Namespace: object.GetNamespace(), Name: object.GetName()})
-			}
+		if err != nil {
+			return
 		}
+		if _, managed := object.GetAnnotations()[keys.State]; !managed {
+			return
+		}
+		impl.EnqueueKey(types.NamespacedName{Namespace: object.GetNamespace(), Name: object.GetName()})
+		if pr, ok := obj.(*tektonv1.PipelineRun); ok {
+			requeueActivePipelineRun(pr, impl.EnqueueAfter, log)
+		}
+	}
+}
+
+// Knative keeps the earliest pending deadline for the same namespace/name.
+// Informer events can therefore enqueue immediately without postponing this tick.
+func requeueActivePipelineRun(pr *tektonv1.PipelineRun, enqueueAfter func(any, time.Duration), log *zap.SugaredLogger) {
+	const delay = 45 * time.Minute
+	if _, managed := pr.Annotations[keys.State]; managed && !noLongerStartable(pr) {
+		enqueueAfter(pr, delay)
+		log.Infow("Requested delayed PipelineRun requeue", "namespace", pr.Namespace, "pipeline-run", pr.Name, "delay", delay.String())
 	}
 }
 
